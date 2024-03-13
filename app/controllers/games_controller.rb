@@ -2,8 +2,11 @@ class GamesController < ApplicationController
   def upsert
     game = Game.find_or_initialize_by(entry_code: game_params[:entry_code])
 
+    user = User.find(game_params[:user_id])
+    game.players.new(user: user)
+
     if game.update game_params
-      render json: game, status: :ok
+      render json: game, include: [:players], status: :ok
     else
       render json: game.errors, status: :unprocessable_entity
     end
@@ -22,6 +25,6 @@ class GamesController < ApplicationController
   private
 
   def game_params
-    params.require(:user).permit(:entry_code, :query, :user_id)
+    params.require(:game).permit(:entry_code, :query, :user_id)
   end
 end

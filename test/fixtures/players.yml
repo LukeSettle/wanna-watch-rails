@@ -1,0 +1,13 @@
+# Read about fixtures at https://api.rubyonrails.org/classes/ActiveRecord/FixtureSet.html
+
+one:
+  finished_at: 2024-03-13 00:02:08
+  ready_at: 2024-03-13 00:02:08
+  user: one
+  game: one
+
+two:
+  finished_at: 2024-03-13 00:02:08
+  ready_at: 2024-03-13 00:02:08
+  user: two
+  game: two

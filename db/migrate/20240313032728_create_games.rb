@@ -3,7 +3,7 @@ class CreateGames < ActiveRecord::Migration[7.1]
     create_table :games do |t|
       t.string :entry_code
       t.text :query
-      t.references :user_id, null: false, foreign_key: true
+      t.references :user, null: false, foreign_key: true
 
       t.timestamps
     end

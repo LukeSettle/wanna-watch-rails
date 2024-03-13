@@ -10,9 +10,18 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2024_03_13_031732) do
+ActiveRecord::Schema[7.1].define(version: 2024_03_13_032728) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "plpgsql"
+
+  create_table "games", force: :cascade do |t|
+    t.string "entry_code"
+    t.text "query"
+    t.bigint "user_id", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["user_id"], name: "index_games_on_user_id"
+  end
 
   create_table "users", force: :cascade do |t|
     t.string "device_id"
@@ -21,4 +30,5 @@ ActiveRecord::Schema[7.1].define(version: 2024_03_13_031732) do
     t.datetime "updated_at", null: false
   end
 
+  add_foreign_key "games", "users"
 end

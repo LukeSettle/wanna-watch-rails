@@ -16,7 +16,7 @@ class GamesController < ApplicationController
     game = Game.find_by entry_code: params[:entry_code]
 
     if game
-      render json: game, status: :ok
+      render json: game, include: [:players], status: :ok
     else
       render json: { error: 'Game not found' }, status: :not_found
     end

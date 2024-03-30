@@ -10,7 +10,7 @@ class GameChannel < ApplicationCable::Channel
       {
         type: 'system',
         message: "#{current_user.username} joined",
-        game: @game.reload.to_json(include: :players)
+        game: @game.reload.to_json(include: { players: { include: :user } })
       }
     )
   end
@@ -23,7 +23,7 @@ class GameChannel < ApplicationCable::Channel
       {
         type: 'system',
         message: "#{current_user.username} left",
-        game: @game.reload.to_json(include: :players)
+        game: @game.reload.to_json(include: { players: { include: :user } })
       }
     )
   end
@@ -38,7 +38,7 @@ class GameChannel < ApplicationCable::Channel
       {
         type: 'system',
         message: "#{current_user.username} is ready",
-        game: @game.to_json(include: :players)
+        game: @game.to_json(include: { players: { include: :user } })
       }
     )
   end
@@ -53,7 +53,7 @@ class GameChannel < ApplicationCable::Channel
       {
         type: 'system',
         message: "#{current_user.username} is finished",
-        game: @game.reload.to_json(include: :players)
+        game: @game.reload.to_json(include: { players: { include: :user } })
       }
     )
   end
@@ -75,7 +75,7 @@ class GameChannel < ApplicationCable::Channel
       {
         type: 'system',
         message: 'Game starting!',
-        game: @game.reload.to_json(include: :players)
+        game: @game.reload.to_json(include: { players: { include: :user } })
       }
     )
   end

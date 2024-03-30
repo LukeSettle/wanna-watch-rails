@@ -38,7 +38,7 @@ class GameChannel < ApplicationCable::Channel
       {
         type: 'system',
         message: "#{current_user.username} is ready",
-        game: @game.to_json(include: { players: { include: :user } })
+        game: @game.reload.to_json(include: { players: { include: :user } })
       }
     )
   end

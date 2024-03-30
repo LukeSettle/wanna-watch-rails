@@ -6,7 +6,7 @@ class GamesController < ApplicationController
     game.players.new(user: user)
 
     if game.update game_params
-      render json: game, include: {players: { include: :user } }, status: :ok
+      render json: game, include: { players: { include: :user } }, status: :ok
     else
       render json: game.errors, status: :unprocessable_entity
     end
@@ -16,7 +16,7 @@ class GamesController < ApplicationController
     game = Game.find_by entry_code: params[:entry_code]
 
     if game
-      render json: game, include: {players: { include: :user } }, status: :ok
+      render json: game, include: { players: { include: :user } }, status: :ok
     else
       render json: { error: 'Game not found' }, status: :not_found
     end

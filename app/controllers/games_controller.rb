@@ -22,6 +22,23 @@ class GamesController < ApplicationController
     end
   end
 
+  def keep_playing
+    game = Game.find(params[:game_id])
+    user = User.find(game_params[:user_id])
+
+    game.update(finished_at: nil)
+    game.players.update(finished_at: nil)
+
+    ActionCable.server.broadcast(
+      "game_#{game.id}",
+      {
+        type: 'system',
+        message: "#{user.username} continued the game",
+        game: @game.reload.to_json(include: { players: { include: :user } })
+      }
+    )
+  end
+
   private
 
   def game_params

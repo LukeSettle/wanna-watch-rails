@@ -4,4 +4,5 @@ Rails.application.routes.draw do
 
   post 'games/upsert'
   get 'games/find_by_entry_code'
+  put 'games/keep_playing'
 end

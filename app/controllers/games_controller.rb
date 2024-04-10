@@ -5,7 +5,7 @@ class GamesController < ApplicationController
     user = User.find(game_params[:user_id])
     game.players.new(user: user)
 
-    if game.update game_params
+    if update_game_and_user(game, user)
       render json: game, include: { players: { include: :user } }, status: :ok
     else
       render json: game.errors, status: :unprocessable_entity
@@ -26,5 +26,12 @@ class GamesController < ApplicationController
 
   def game_params
     params.require(:game).permit(:entry_code, :query, :user_id)
+  end
+
+  def update_game_and_user(game, user)
+    ActiveRecord::Base.transaction do
+      game.update! game_params
+      user.update!(providers: params[:providers])
+    end
   end
 end

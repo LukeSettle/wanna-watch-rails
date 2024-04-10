@@ -34,7 +34,7 @@ class GamesController < ApplicationController
       {
         type: 'system',
         message: "#{user.username} continued the game",
-        game: @game.reload.to_json(include: { players: { include: :user } })
+        game: game.reload.to_json(include: { players: { include: :user } })
       }
     )
   end

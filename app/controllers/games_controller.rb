@@ -37,6 +37,8 @@ class GamesController < ApplicationController
         game: game.reload.to_json(include: { players: { include: :user } })
       }
     )
+
+    render json: {}, status: 200
   end
 
   private

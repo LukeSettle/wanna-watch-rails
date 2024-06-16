@@ -24,8 +24,9 @@ class GamesController < ApplicationController
 
   def keep_playing
     game = Game.find(params[:game_id])
-    user = User.find(game_params[:user_id])
+    user = User.find(params[:user_id])
 
+    game.update(game_params)
     game.update(finished_at: nil)
     game.players.update(finished_at: nil)
 

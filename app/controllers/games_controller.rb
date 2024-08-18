@@ -26,8 +26,7 @@ class GamesController < ApplicationController
     game = Game.find(params[:game_id])
     user = User.find(params[:user_id])
 
-    game.update(game_params)
-    game.update(finished_at: nil)
+    game.update(game_params.merge(finished_at: nil, load_more_count: game.load_more_count + 1))
     game.players.update(finished_at: nil)
 
     ActionCable.server.broadcast(

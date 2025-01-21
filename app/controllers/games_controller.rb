@@ -1,4 +1,4 @@
-class GamesController < ApplicationController
+class GamesController < ApiController
   def upsert
     game = Game.find_or_initialize_by(entry_code: game_params[:entry_code])
 

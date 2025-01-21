@@ -32,5 +32,6 @@ module WannaWatchRails
     config.action_cable.disable_request_forgery_protection = true
 
     config.hosts << "wanna-watch-rails.onrender.com"
+    config.hosts << "wannawatch.app"
   end
 end

@@ -1,4 +1,4 @@
-class UsersController < ApplicationController
+class UsersController < ApiController
   def upsert
     user = User.find_or_initialize_by(device_id: user_params[:device_id])
 

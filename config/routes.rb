@@ -7,4 +7,6 @@ Rails.application.routes.draw do
   post 'games/upsert'
   get 'games/find_by_entry_code'
   post 'games/keep_playing'
+
+  root to: 'application#home'
 end

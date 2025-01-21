@@ -1,4 +1,4 @@
-class FriendsController < ApplicationController
+class FriendsController < ApiController
   def index
     user = User.find(params[:user_id])
 

@@ -4,6 +4,6 @@ class User < ApplicationRecord
   has_many :other_players, through: :games, source: :players, class_name: 'Player', foreign_key: 'user_id'
 
   def friends
-    games.map(&:players).flatten.map(&:user).uniq - [self]
+    games.map(&:players).flatten.map(&:user).uniq
   end
 end

@@ -1,4 +1,11 @@
 class GamesController < ApiController
+  def index
+    user = User.find(params[:user_id])
+    games = user.games.where(finished_at: nil)
+
+    render json: games, include: { players: { include: :user } }, status: :ok
+  end
+
   def upsert
     game = Game.find_or_initialize_by(entry_code: game_params[:entry_code])
 

@@ -1,13 +1,15 @@
 class User < ApplicationRecord
   has_many :players
-  has_many :player_games, through: :players, source: :game
-  has_many :owned_games, class_name: 'Game', foreign_key: 'user_id'
+  has_many :owned_games, class_name: "Game", foreign_key: "user_id"
 
-  def games
-    (owned_games + player_games).uniq
-  end
+  has_many :games, ->(user) {
+    unscope(where: :user_id).where(
+      "games.user_id = :id OR games.id IN (SELECT game_id FROM players WHERE user_id = :id)",
+      id: user.id
+    ).distinct
+  }, class_name: "Game"
 
   def friends
-    games.map(&:players).flatten.map(&:user).uniq
+    games.includes(:players).map { |game| game.players.map(&:user) }.flatten.uniq
   end
 end

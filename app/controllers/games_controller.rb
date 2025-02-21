@@ -29,6 +29,16 @@ class GamesController < ApiController
     end
   end
 
+  def destroy
+    game = Game.find(params[:id])
+
+    if game.destroy
+      render json: { message: 'Game deleted successfully' }, status: :ok
+    else
+      render json: { error: 'Failed to delete game' }, status: :unprocessable_entity
+    end
+  end
+
   def keep_playing
     game = Game.find(params[:game_id])
     user = User.find(params[:user_id])

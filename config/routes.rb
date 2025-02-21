@@ -4,7 +4,11 @@ Rails.application.routes.draw do
   get 'friends/index'
   get 'friends/movie_ids'
 
-  resources :games, only: [:index, :destroy]
+  resources :games, only: [:index] do
+    member do
+      post :finish
+    end
+  end
   post 'games/upsert'
   get 'games/find_by_entry_code'
   post 'games/keep_playing'

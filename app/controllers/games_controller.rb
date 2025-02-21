@@ -29,13 +29,13 @@ class GamesController < ApiController
     end
   end
 
-  def destroy
+  def finish
     game = Game.find(params[:id])
 
-    if game.destroy
-      render json: { message: 'Game deleted successfully' }, status: :ok
+    if game.update(finished_at: Time.now)
+      render json: { message: 'Game finished successfully' }, status: :ok
     else
-      render json: { error: 'Failed to delete game' }, status: :unprocessable_entity
+      render json: { error: 'Failed to finish game' }, status: :unprocessable_entity
     end
   end
 

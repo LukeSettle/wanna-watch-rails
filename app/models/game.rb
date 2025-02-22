@@ -2,6 +2,8 @@ class Game < ApplicationRecord
   belongs_to :user
   has_many :players
 
+  accepts_nested_attributes_for :players, allow_destroy: true
+
   def all_players_ready?
     players.all? { |player| player.ready_at.present? }
   end

@@ -61,13 +61,13 @@ class GamesController < ApiController
   private
 
   def game_params
-    params.require(:game).permit(:entry_code, :query, :user_id)
+    params.require(:game).permit(:entry_code, :query, :user_id, players_attributes: [:id, :user_id, :_destroy])
   end
 
   def update_game_and_user(game, user)
     ActiveRecord::Base.transaction do
       game.update! game_params
-      user.update!(providers: params[:providers])
+      user.update!(providers: params[:providers]) if params[:providers]
     end
   end
 end

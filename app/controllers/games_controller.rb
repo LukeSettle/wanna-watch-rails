@@ -10,7 +10,7 @@ class GamesController < ApiController
     game = Game.find_or_initialize_by(entry_code: game_params[:entry_code])
 
     user = User.find(game_params[:user_id])
-    game.players.new(user: user)
+    game.players.new(user: user) unless game.players.find_by(user: user)
 
     if update_game_and_user(game, user)
       render json: game, include: { players: { include: :user } }, status: :ok

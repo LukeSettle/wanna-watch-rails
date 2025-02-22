@@ -66,7 +66,10 @@ class GamesController < ApiController
 
   def update_game_and_user(game, user)
     ActiveRecord::Base.transaction do
-      game.update! game_params
+      game.assign_attributes(game_params)
+      game.players.each { |player| player.game = game }
+
+      game.save!
       user.update!(providers: params[:providers]) if params[:providers]
     end
   end

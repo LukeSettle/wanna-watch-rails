@@ -13,6 +13,7 @@ class GamesController < ApiController
     game.players.new(user: user) unless game.players.find_by(user: user)
 
     if update_game_and_user(game, user)
+      game.broadcast_game_index_updated
       render json: game, include: { players: { include: :user } }, status: :ok
     else
       render json: game.errors, status: :unprocessable_entity
@@ -33,6 +34,7 @@ class GamesController < ApiController
     game = Game.find(params[:id])
 
     if game.update(finished_at: Time.now)
+      game.broadcast_game_index_updated
       render json: { message: 'Game finished successfully' }, status: :ok
     else
       render json: { error: 'Failed to finish game' }, status: :unprocessable_entity
@@ -55,22 +57,27 @@ class GamesController < ApiController
       }
     )
 
+    game.broadcast_game_index_updated
+
     render json: {}, status: 200
   end
 
   private
 
   def game_params
-    params.require(:game).permit(:entry_code, :query, :user_id, players_attributes: [:id, :user_id, :_destroy])
+    params.require(:game).permit(:entry_code, :query, :user_id, players_attributes: [:id, :user_id, :game_id, :_destroy])
   end
 
   def update_game_and_user(game, user)
     ActiveRecord::Base.transaction do
       game.assign_attributes(game_params)
-      game.players.each { |player| player.game = game }
 
       game.save!
       user.update!(providers: params[:providers]) if params[:providers]
+
+      true
+    rescue ActiveRecord::RecordInvalid => e
+      false
     end
   end
 end

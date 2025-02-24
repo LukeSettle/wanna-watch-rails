@@ -12,6 +12,18 @@ class Game < ApplicationRecord
     players.all? { |player| player.finished_at.present? }
   end
 
+  def broadcast_game_index_updated
+    players.each do |player|
+      ActionCable.server.broadcast(
+        "user_games_#{player.user.id}",
+        {
+          type: 'system',
+          message: 'game_index_updated'
+        }
+      )
+    end
+  end
+
   def start
     update(started_at: DateTime.current)
   end

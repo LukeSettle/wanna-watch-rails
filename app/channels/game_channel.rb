@@ -16,8 +16,6 @@ class GameChannel < ApplicationCable::Channel
   end
 
   def unsubscribed
-    @game.players.find_by(user: current_user).destroy unless @game.started_at.present?
-
     ActionCable.server.broadcast(
       game_stream,
       {
@@ -75,7 +73,7 @@ class GameChannel < ApplicationCable::Channel
       {
         type: 'system',
         message: 'Game starting!',
-        game: @game.reload.to_json(include: { players: { include: :user } })
+        game: {}
       }
     )
   end

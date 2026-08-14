@@ -116,6 +116,12 @@ class DeckBuilder
     min_rating = @query_params["vote_average.gte"].to_f
     return false if movie["vote_average"].to_f < min_rating
 
+    min_runtime = @query_params["with_runtime.gte"].to_i
+    max_runtime = @query_params["with_runtime.lte"].to_i
+    runtime = movie["runtime"].to_i
+    return false if min_runtime.positive? && runtime.positive? && runtime < min_runtime
+    return false if max_runtime.positive? && max_runtime < 400 && runtime.positive? && runtime > max_runtime
+
     year = movie["release_date"].to_s.slice(0, 4).to_i
     year_from = @query_params["primary_release_date.gte"].to_s.slice(0, 4).to_i
     year_to = @query_params["primary_release_date.lte"].to_s.slice(0, 4).to_i

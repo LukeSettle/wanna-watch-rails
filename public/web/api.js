@@ -90,7 +90,11 @@ const backend = {
 
 const tmdb = {
   async movie(movieId) {
-    const response = await fetch(`https://api.themoviedb.org/3/movie/${movieId}?api_key=${TMDB_API_KEY}`);
+    const params = new URLSearchParams({
+      api_key: TMDB_API_KEY,
+      append_to_response: "credits,videos,reviews,watch/providers",
+    });
+    const response = await fetch(`https://api.themoviedb.org/3/movie/${movieId}?${params}`);
     if (!response.ok) throw new Error(`TMDB movie failed (${response.status})`);
     return response.json();
   },
@@ -147,4 +151,8 @@ function generateEntryCode() {
 
 function posterUrl(path, size = "w500") {
   return path ? `https://image.tmdb.org/t/p/${size}${path}` : null;
+}
+
+function profileUrl(path) {
+  return path ? `https://image.tmdb.org/t/p/w185${path}` : null;
 }

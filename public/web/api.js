@@ -60,11 +60,8 @@ const backend = {
   keepPlaying(params) {
     return backendRequest("/games/keep_playing", { method: "POST", body: params });
   },
-  friendsIndex(userId) {
-    return backendRequest(`/friends/index?user_id=${userId}`);
-  },
-  friendsMovieIds(userId, friendId) {
-    return backendRequest(`/friends/movie_ids?user_id=${userId}&friend_id=${friendId}`);
+  previousGames(userId) {
+    return backendRequest(`/games/previous?user_id=${userId}`);
   },
 };
 
@@ -80,16 +77,10 @@ const tmdb = {
     return (await response.json()).results;
   },
 
-  async movieDetails(movieId) {
-    const [details, providers] = await Promise.all([
-      fetch(`https://api.themoviedb.org/3/movie/${movieId}?api_key=${TMDB_API_KEY}`),
-      fetch(`https://api.themoviedb.org/3/movie/${movieId}/watch/providers?api_key=${TMDB_API_KEY}`),
-    ]);
-    if (!details.ok) throw new Error(`TMDB details failed (${details.status})`);
-    return {
-      movieDetails: await details.json(),
-      watchProviders: providers.ok ? await providers.json() : { results: {} },
-    };
+  async movie(movieId) {
+    const response = await fetch(`https://api.themoviedb.org/3/movie/${movieId}?api_key=${TMDB_API_KEY}`);
+    if (!response.ok) throw new Error(`TMDB movie failed (${response.status})`);
+    return response.json();
   },
 
   async genres() {

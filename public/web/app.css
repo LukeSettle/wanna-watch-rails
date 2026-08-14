@@ -455,6 +455,49 @@ select option { color: var(--ink); }
   margin-top: 8px;
 }
 
+/* ---------- previous games ---------- */
+
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.match-badge {
+  background: rgba(46, 204, 113, 0.18);
+  color: var(--like);
+  border: 1px solid rgba(46, 204, 113, 0.4);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.tab-row {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0 14px;
+}
+
+.tab {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 10px 14px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.tab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
 /* ---------- misc ---------- */
 
 .spinner {

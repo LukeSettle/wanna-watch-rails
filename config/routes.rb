@@ -12,6 +12,7 @@ Rails.application.routes.draw do
       post :finish_matching
     end
   end
+  get 'games/previous'
   post 'games/upsert'
   get 'games/find_by_entry_code'
   post 'games/keep_playing'

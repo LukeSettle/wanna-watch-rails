@@ -3,7 +3,7 @@
 
 const state = {
   user: null,
-  view: "loading",      // view when not in a game: name | home | create | matches
+  view: "loading",      // view when not in a game: name | home | create | history
   game: null,
   movies: [],
   serverMessages: [],
@@ -344,7 +344,7 @@ function render() {
     name: renderNameScreen,
     home: renderHomeScreen,
     create: renderCreateScreen,
-    matches: renderMatchesScreen,
+    history: renderHistoryScreen,
     lobby: renderLobbyScreen,
     match: renderMatchScreen,
     waiting: renderWaitingScreen,
@@ -443,7 +443,7 @@ function renderHomeScreen() {
         <div id="games-list"><p class="muted">Loading…</p></div>
       </section>
 
-      <button class="link" id="view-matches">View past matches with friends</button>
+      <button class="link" id="view-history">See previous games</button>
     </div>`;
 
   document.getElementById("create-game").addEventListener("click", () => {
@@ -465,8 +465,8 @@ function renderHomeScreen() {
     render();
   });
 
-  document.getElementById("view-matches").addEventListener("click", () => {
-    state.view = "matches";
+  document.getElementById("view-history").addEventListener("click", () => {
+    state.view = "history";
     render();
   });
 
@@ -949,14 +949,8 @@ async function renderResultsScreen() {
 
   const localMovies = new Map(state.movies.map((m) => [m.id, m]));
   const cards = await Promise.all(matchedIds.slice(0, 30).map(async (id) => {
-    let movie = localMovies.get(id);
-    if (!movie) {
-      try {
-        movie = (await tmdb.movieDetails(id)).movieDetails;
-      } catch {
-        return "";
-      }
-    }
+    const movie = localMovies.get(id) || (await fetchMovieSummary(id));
+    if (!movie) return "";
     const poster = posterUrl(movie.poster_path, "w342");
     const year = movie.release_date ? movie.release_date.slice(0, 4) : "";
     return `
@@ -972,16 +966,34 @@ async function renderResultsScreen() {
   if (grid.isConnected) grid.innerHTML = cards.join("");
 }
 
-// ---------- friend matches ----------
+// ---------- previous games ----------
 
-async function renderMatchesScreen() {
+const movieSummaryCache = new Map();
+
+async function fetchMovieSummary(id) {
+  if (movieSummaryCache.has(id)) return movieSummaryCache.get(id);
+  try {
+    const movie = await tmdb.movie(id);
+    movieSummaryCache.set(id, movie);
+    return movie;
+  } catch {
+    movieSummaryCache.set(id, null);
+    return null;
+  }
+}
+
+function matchedIdsFor(game) {
+  const lists = (game.players || []).map((p) => p.liked_movie_ids || []);
+  return lists.length ? lists.reduce((a, b) => a.filter((id) => b.includes(id))) : [];
+}
+
+async function renderHistoryScreen() {
   app.innerHTML = `
     ${topBarHtml("")}
     <div class="screen">
-      <h1 class="headline-sm">Matches with friends</h1>
-      <p class="muted">Pick a friend to see every movie you've both liked, across all your games.</p>
-      <div id="friend-list" class="card list-card"><p class="muted">Loading…</p></div>
-      <div id="friend-matches"></div>
+      <h1 class="headline-sm">Previous games</h1>
+      <p class="muted">Tap a game to see what everyone matched on — or flip to see all likes.</p>
+      <div id="history-content"><p class="muted">Loading…</p></div>
       <button class="link" id="back-home">Back to home</button>
     </div>`;
 
@@ -991,54 +1003,115 @@ async function renderMatchesScreen() {
     render();
   });
 
-  let friends = [];
+  let games = [];
   try {
-    friends = (await backend.friendsIndex(state.user.id)).filter((f) => f.id !== state.user.id);
+    games = await backend.previousGames(state.user.id);
   } catch {
-    // fall through to empty state
+    // shows the empty state below
   }
 
-  const list = document.getElementById("friend-list");
-  if (!list) return;
+  const container = document.getElementById("history-content");
+  if (!container) return;
 
-  if (friends.length === 0) {
-    list.innerHTML = `<p class="muted">No friends yet — play a game together first!</p>`;
+  if (games.length === 0) {
+    container.innerHTML = `<p class="muted">No finished games yet — play one first!</p>`;
+    return;
+  }
+  renderHistoryList(container, games);
+}
+
+function renderHistoryList(container, games) {
+  container.innerHTML = games.map((game) => {
+    const date = game.finished_at
+      ? new Date(game.finished_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+      : "";
+    const names = game.players.map((p) => esc(p.user?.username)).join(", ");
+    const solo = game.players.length === 1;
+    const count = matchedIdsFor(game).length;
+    const label = solo
+      ? `${count} like${count === 1 ? "" : "s"}`
+      : `${count} match${count === 1 ? "" : "es"}`;
+    return `
+      <button class="game-row" data-id="${game.id}">
+        <span class="game-code">${esc(game.entry_code)}</span>
+        <span class="game-players">${names}</span>
+        <span class="match-badge">${label}</span>
+        <span class="muted">${date}</span>
+      </button>`;
+  }).join("");
+
+  container.querySelectorAll(".game-row").forEach((row) => {
+    row.addEventListener("click", () => {
+      const game = games.find((g) => g.id === Number(row.dataset.id));
+      renderHistoryDetail(container, games, game, "matches");
+    });
+  });
+}
+
+async function renderHistoryDetail(container, games, game, tab) {
+  const matchedIds = matchedIdsFor(game);
+  const playerCount = game.players.length;
+
+  const likersByMovie = new Map();
+  game.players.forEach((player) => {
+    (player.liked_movie_ids || []).forEach((id) => {
+      if (!likersByMovie.has(id)) likersByMovie.set(id, []);
+      likersByMovie.get(id).push(player.user?.username || "Someone");
+    });
+  });
+  const allLikedIds = [...likersByMovie.keys()]
+    .sort((a, b) => likersByMovie.get(b).length - likersByMovie.get(a).length);
+
+  const ids = tab === "matches" ? matchedIds : allLikedIds;
+
+  container.innerHTML = `
+    <div class="history-header">
+      <button class="link" id="history-back">← All games</button>
+      <span class="code-pill">${esc(game.entry_code)}</span>
+    </div>
+    <p class="muted">Played by ${game.players.map((p) => esc(p.user?.username)).join(", ")}</p>
+    <div class="tab-row">
+      <button class="tab ${tab === "matches" ? "active" : ""}" data-tab="matches">
+        ${playerCount === 1 ? "Likes" : "Matches"} (${matchedIds.length})
+      </button>
+      <button class="tab ${tab === "all" ? "active" : ""}" data-tab="all">All likes (${allLikedIds.length})</button>
+    </div>
+    <div id="history-grid" class="results-grid">${ids.length ? `<p class="muted">Loading movies…</p>` : ""}</div>`;
+
+  document.getElementById("history-back").addEventListener("click", () => renderHistoryList(container, games));
+  container.querySelectorAll(".tab").forEach((button) => {
+    button.addEventListener("click", () => renderHistoryDetail(container, games, game, button.dataset.tab));
+  });
+
+  const grid = document.getElementById("history-grid");
+  if (ids.length === 0) {
+    grid.outerHTML = `<p class="muted">${tab === "matches" && playerCount > 1
+      ? "No matches in this game."
+      : "No likes in this game."}</p>`;
     return;
   }
 
-  list.innerHTML = friends
-    .map((f) => `<button class="game-row friend-row" data-id="${f.id}"><span>${esc(f.username)}</span><span class="game-resume">See matches →</span></button>`)
-    .join("");
+  const cards = await Promise.all(ids.slice(0, 30).map(async (id) => {
+    const movie = await fetchMovieSummary(id);
+    if (!movie) return "";
+    const likers = likersByMovie.get(id) || [];
+    const everyone = playerCount > 1 && likers.length === playerCount;
+    const year = movie.release_date ? movie.release_date.slice(0, 4) : "";
+    const subtitle = tab === "all"
+      ? (everyone ? "⭐ Everyone liked this" : `Liked by ${likers.map(esc).join(", ")}`)
+      : `${year} · ★ ${movie.vote_average ? movie.vote_average.toFixed(1) : "–"}`;
+    const poster = posterUrl(movie.poster_path, "w342");
+    return `
+      <div class="result-card">
+        ${poster ? `<img src="${poster}" alt="${esc(movie.title)}">` : `<div class="poster-missing">${esc(movie.title)}</div>`}
+        <div class="result-info">
+          <strong>${esc(movie.title)}</strong>
+          <span class="muted">${subtitle}</span>
+        </div>
+      </div>`;
+  }));
 
-  list.querySelectorAll(".friend-row").forEach((row) => {
-    row.addEventListener("click", async () => {
-      const container = document.getElementById("friend-matches");
-      container.innerHTML = `<p class="muted center-text">Loading matches…</p>`;
-      try {
-        const { ourLikedMovieIds } = await backend.friendsMovieIds(state.user.id, row.dataset.id);
-        if (ourLikedMovieIds.length === 0) {
-          container.innerHTML = `<p class="muted center-text">No shared likes with this friend yet.</p>`;
-          return;
-        }
-        const cards = await Promise.all(ourLikedMovieIds.slice(0, 24).map(async (id) => {
-          try {
-            const movie = (await tmdb.movieDetails(id)).movieDetails;
-            const poster = posterUrl(movie.poster_path, "w342");
-            return `
-              <div class="result-card">
-                ${poster ? `<img src="${poster}" alt="${esc(movie.title)}">` : `<div class="poster-missing">${esc(movie.title)}</div>`}
-                <div class="result-info"><strong>${esc(movie.title)}</strong></div>
-              </div>`;
-          } catch {
-            return "";
-          }
-        }));
-        container.innerHTML = `<div class="results-grid">${cards.join("")}</div>`;
-      } catch {
-        container.innerHTML = `<p class="muted center-text">Could not load matches.</p>`;
-      }
-    });
-  });
+  if (grid.isConnected) grid.innerHTML = cards.join("");
 }
 
 boot();

@@ -6,6 +6,13 @@ class GamesController < ApiController
     render json: games, include: { players: { include: :user } }, status: :ok
   end
 
+  def previous
+    user = User.find(params[:user_id])
+    games = user.games.where.not(finished_at: nil).order(finished_at: :desc).limit(50)
+
+    render json: games, include: { players: { include: :user } }, status: :ok
+  end
+
   def upsert
     game = Game.find_or_initialize_by(entry_code: game_params[:entry_code])
 

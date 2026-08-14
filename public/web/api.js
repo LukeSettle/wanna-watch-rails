@@ -63,20 +63,12 @@ const backend = {
   previousGames(userId) {
     return backendRequest(`/games/previous?user_id=${userId}`);
   },
+  gameDeck(gameId) {
+    return backendRequest(`/games/${gameId}/deck`);
+  },
 };
 
 const tmdb = {
-  // game.query stores an axios-style request ({ method, url, params }) written
-  // by whichever client created the game, so every player runs the same search.
-  async discover(game) {
-    const options = JSON.parse(game.query);
-    const page = ((options.params.page + game.load_more_count) % 500) + 1;
-    const params = new URLSearchParams({ ...options.params, page });
-    const response = await fetch(`${options.url}&${params}`);
-    if (!response.ok) throw new Error(`TMDB discover failed (${response.status})`);
-    return (await response.json()).results;
-  },
-
   async movie(movieId) {
     const response = await fetch(`https://api.themoviedb.org/3/movie/${movieId}?api_key=${TMDB_API_KEY}`);
     if (!response.ok) throw new Error(`TMDB movie failed (${response.status})`);

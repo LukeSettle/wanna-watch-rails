@@ -69,6 +69,23 @@ class GamesController < ApiController
     render json: {}, status: 200
   end
 
+  def deck
+    game = Game.find(params[:id])
+
+    game.with_lock do
+      if game.deck_round != game.load_more_count
+        deck = DeckBuilder.new(game).build
+        game.update!(
+          deck: deck,
+          deck_round: game.load_more_count,
+          dealt_movie_ids: (game.dealt_movie_ids.to_a + deck.map { |m| m["id"] }).uniq
+        )
+      end
+    end
+
+    render json: { movies: game.deck }, status: :ok
+  end
+
   def join
     game = Game.find(params[:id])
     user = User.find(params[:user_id])

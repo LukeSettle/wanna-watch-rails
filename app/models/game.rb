@@ -4,6 +4,12 @@ class Game < ApplicationRecord
 
   accepts_nested_attributes_for :players, allow_destroy: true
 
+  # The deck is large and only needed via games#deck; keep it out of game
+  # payloads and broadcasts.
+  def as_json(options = {})
+    super({ except: [:deck, :dealt_movie_ids] }.merge(options))
+  end
+
   def all_players_ready?
     players.all? { |player| player.ready_at.present? }
   end

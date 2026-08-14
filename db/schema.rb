@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2024_08_03_202158) do
+ActiveRecord::Schema[7.1].define(version: 2026_08_14_011000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "plpgsql"
 
@@ -23,6 +23,9 @@ ActiveRecord::Schema[7.1].define(version: 2024_08_03_202158) do
     t.datetime "started_at"
     t.datetime "finished_at"
     t.integer "load_more_count", default: 0
+    t.jsonb "deck", default: []
+    t.integer "deck_round", default: -1
+    t.integer "dealt_movie_ids", default: [], array: true
     t.index ["user_id"], name: "index_games_on_user_id"
   end
 

@@ -220,6 +220,17 @@ function leaveGame() {
   refreshGamesList();
 }
 
+function defaultGameValues() {
+  return {
+    providers: state.user.providers || [],
+    genres: [],
+    languages: [],
+    userScoreRange: [0, 10],
+    releaseYearRange: [1980, new Date().getFullYear()],
+    runtimeRange: [0, 240],
+  };
+}
+
 async function createGame(values) {
   const query = buildDiscoverQuery(values);
   const game = await backend.upsertGame({
@@ -229,6 +240,14 @@ async function createGame(values) {
     providers: values.providers,
   });
   startGame(game);
+}
+
+async function quickPlay() {
+  try {
+    await createGame(defaultGameValues());
+  } catch {
+    toast("Something went wrong creating the game.");
+  }
 }
 
 async function sendReady() {
@@ -269,12 +288,12 @@ async function keepPlaying() {
 // ---------- movies ----------
 
 async function fetchMovies() {
-  if (!state.game?.query || state.fetchingMovies) return;
+  if (!state.game || state.fetchingMovies) return;
   state.fetchingMovies = true;
   render();
 
   try {
-    const results = await tmdb.discover(state.game);
+    const { movies: results } = await backend.gameDeck(state.game.id);
     if (results.length === 0 && state.movies.every((m) => m.hidden)) {
       state.noMoreMovies = true;
     }
@@ -287,7 +306,7 @@ async function fetchMovies() {
     });
   } catch (error) {
     console.error(error);
-    toast("Could not load movies from TMDB.");
+    toast("Could not load movies.");
   } finally {
     state.fetchingMovies = false;
     render();
@@ -425,10 +444,11 @@ function renderHomeScreen() {
     <div class="screen">
       <div class="hero">
         <h1 class="headline">Movie night, <span class="accent">solved</span>.</h1>
-        <p class="muted">Start a game, share the code, swipe the same movies. See what you all match on.</p>
+        <p class="muted">Start a game, share the code, swipe the same movies. The more you play, the better your decks get — curated from what everyone likes.</p>
       </div>
 
-      <button class="btn btn-primary btn-big" id="create-game">+ Create a game</button>
+      <button class="btn btn-primary btn-big" id="quick-play">▶ Quick play</button>
+      <button class="btn btn-ghost" id="create-game">Custom game (optional filters)</button>
 
       <form id="join-form" class="card form-card">
         <label for="join-code">Have a game code?</label>
@@ -445,6 +465,11 @@ function renderHomeScreen() {
 
       <button class="link" id="view-history">See previous games</button>
     </div>`;
+
+  document.getElementById("quick-play").addEventListener("click", (event) => {
+    event.target.disabled = true;
+    quickPlay();
+  });
 
   document.getElementById("create-game").addEventListener("click", () => {
     state.view = "create";
@@ -505,7 +530,8 @@ async function renderCreateScreen() {
   app.innerHTML = `
     ${topBarHtml("")}
     <div class="screen">
-      <h1 class="headline-sm">Set up your movie list</h1>
+      <h1 class="headline-sm">Custom game</h1>
+      <p class="muted">Everything here is optional. Your deck is curated from what everyone playing has liked before — filters just narrow it down.</p>
       <form id="create-form">
         <section class="card form-card">
           <label>Streaming services <span class="muted">(optional)</span></label>

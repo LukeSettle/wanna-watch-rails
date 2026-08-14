@@ -3,7 +3,7 @@
 
 const state = {
   user: null,
-  view: "loading",      // view when not in a game: name | home | create | matches
+  view: "loading",      // view when not in a game: name | home | create | history
   game: null,
   movies: [],
   serverMessages: [],
@@ -73,10 +73,25 @@ async function boot() {
   }
   state.deviceId = deviceId;
 
+  const resetToken = new URLSearchParams(location.search).get("reset_token");
+  if (resetToken) {
+    history.replaceState({}, "", "/");
+    state.resetToken = resetToken;
+    state.view = "reset";
+    render();
+    return;
+  }
+
+  // A login session wins over the device-based guest identity.
   try {
-    state.user = await backend.findUserByDeviceId(deviceId);
+    state.user = await backend.me();
+    adoptUser(state.user);
   } catch {
-    state.user = null;
+    try {
+      state.user = await backend.findUserByDeviceId(deviceId);
+    } catch {
+      state.user = null;
+    }
   }
 
   if (state.user?.username) {
@@ -85,6 +100,25 @@ async function boot() {
     state.view = "name";
     render();
   }
+}
+
+// Keeps the guest fallback pointing at the logged-in account.
+function adoptUser(user) {
+  state.user = user;
+  if (user.device_id) {
+    state.deviceId = user.device_id;
+    localStorage.setItem(storageKey("device_id"), user.device_id);
+  }
+}
+
+async function logout() {
+  try {
+    await backend.logout();
+  } catch {
+    // clearing local state is what matters
+  }
+  localStorage.removeItem(storageKey("device_id"));
+  location.href = "/";
 }
 
 function pendingEntryCode() {
@@ -152,10 +186,31 @@ function applyGameUpdate(game) {
     state.finishedSent = false;
     fetchMovies();
   }
-  if (!currentPlayer()?.finished_at) {
-    state.finishedSent = false;
-  }
 }
+
+// Safety net: if the websocket is down, or we're on a screen that depends on
+// other players, refresh the game state by polling.
+let pollInFlight = false;
+setInterval(async () => {
+  if (!state.game || pollInFlight) return;
+
+  const screen = screenName();
+  const socketOpen = cable?.isOpen();
+  if (socketOpen && !["lobby", "waiting", "results"].includes(screen)) return;
+
+  pollInFlight = true;
+  try {
+    const game = await backend.findGameByEntryCode(state.game.entry_code);
+    if (state.game && game.id === state.game.id) {
+      applyGameUpdate(game);
+      render();
+    }
+  } catch {
+    // offline or transient error; try again on the next tick
+  } finally {
+    pollInFlight = false;
+  }
+}, 4000);
 
 // ---------- game lifecycle ----------
 
@@ -170,7 +225,7 @@ async function joinGameByCode(code) {
   }
 }
 
-function startGame(game) {
+async function startGame(game) {
   state.game = game;
   state.movies = [];
   state.serverMessages = [];
@@ -178,6 +233,13 @@ function startGame(game) {
   state.finishedSent = false;
   connectCable();
   cable.subscribe(gameChannelParams());
+  render();
+
+  try {
+    applyGameUpdate(await backend.joinGame(game.id, state.user.id));
+  } catch {
+    toast("Could not join the game. Check your connection.");
+  }
   render();
   if (currentPlayer()?.ready_at) fetchMovies();
 }
@@ -192,6 +254,17 @@ function leaveGame() {
   refreshGamesList();
 }
 
+function defaultGameValues() {
+  return {
+    providers: state.user.providers || [],
+    genres: [],
+    languages: [],
+    userScoreRange: [0, 10],
+    releaseYearRange: [1980, new Date().getFullYear()],
+    runtimeRange: [0, 240],
+  };
+}
+
 async function createGame(values) {
   const query = buildDiscoverQuery(values);
   const game = await backend.upsertGame({
@@ -203,18 +276,39 @@ async function createGame(values) {
   startGame(game);
 }
 
-function sendReady() {
-  cable.perform(gameChannelParams(), "ready");
+async function quickPlay() {
+  try {
+    await createGame(defaultGameValues());
+  } catch {
+    toast("Something went wrong creating the game.");
+  }
+}
+
+async function sendReady() {
+  try {
+    applyGameUpdate(await backend.ready(state.game.id, state.user.id));
+    render();
+    fetchMovies();
+  } catch {
+    toast("Could not start. Try again.");
+  }
 }
 
 function likedMovieIds() {
   return loadJSON(likedIdsKey(), []);
 }
 
-function sendFinished() {
+async function sendFinished() {
   if (state.finishedSent) return;
   state.finishedSent = true;
-  cable.perform(gameChannelParams(), "finish_matching", { liked_movie_ids: likedMovieIds() });
+  try {
+    applyGameUpdate(await backend.finishMatching(state.game.id, state.user.id, likedMovieIds()));
+    render();
+  } catch {
+    state.finishedSent = false;
+    toast("Couldn't send your picks — retrying…");
+    setTimeout(sendFinished, 3000);
+  }
 }
 
 async function keepPlaying() {
@@ -228,12 +322,12 @@ async function keepPlaying() {
 // ---------- movies ----------
 
 async function fetchMovies() {
-  if (!state.game?.query || state.fetchingMovies) return;
+  if (!state.game || state.fetchingMovies) return;
   state.fetchingMovies = true;
   render();
 
   try {
-    const results = await tmdb.discover(state.game);
+    const { movies: results } = await backend.gameDeck(state.game.id);
     if (results.length === 0 && state.movies.every((m) => m.hidden)) {
       state.noMoreMovies = true;
     }
@@ -246,7 +340,7 @@ async function fetchMovies() {
     });
   } catch (error) {
     console.error(error);
-    toast("Could not load movies from TMDB.");
+    toast("Could not load movies.");
   } finally {
     state.fetchingMovies = false;
     render();
@@ -274,7 +368,8 @@ function recordSwipe(movie, liked) {
     sendFinished();
     render();
   } else {
-    updateDeckDom();
+    updateDeckCounter();
+    revealNextCard();
   }
 }
 
@@ -292,6 +387,7 @@ function screenName() {
 
 function render() {
   const screen = screenName();
+  document.body.classList.toggle("lock-scroll", screen === "match");
   const key = renderKeyFor(screen);
   if (key === lastRenderKey) {
     if (screen === "lobby" || screen === "waiting") updateDynamicLists(screen);
@@ -301,9 +397,12 @@ function render() {
 
   const renderers = {
     name: renderNameScreen,
+    login: renderLoginScreen,
+    register: renderRegisterScreen,
+    reset: renderResetScreen,
     home: renderHomeScreen,
     create: renderCreateScreen,
-    matches: renderMatchesScreen,
+    history: renderHistoryScreen,
     lobby: renderLobbyScreen,
     match: renderMatchScreen,
     waiting: renderWaitingScreen,
@@ -361,6 +460,7 @@ function renderNameScreen() {
         <input id="username" name="username" maxlength="30" placeholder="Enter your name" required autocomplete="nickname">
         <button type="submit" class="btn btn-primary">Let's go</button>
       </form>
+      <button class="link" id="go-login">Already have an account? Log in</button>
     </div>`;
 
   document.getElementById("name-form").addEventListener("submit", async (event) => {
@@ -374,6 +474,127 @@ function renderNameScreen() {
       toast("Could not save your name. Try again.");
     }
   });
+
+  document.getElementById("go-login").addEventListener("click", () => {
+    state.view = "login";
+    render();
+  });
+}
+
+// ---------- auth screens ----------
+
+function renderLoginScreen() {
+  app.innerHTML = `
+    <div class="screen center">
+      <img src="/logo.png" alt="WannaWatch" class="logo">
+      <h1 class="headline-sm">Welcome back</h1>
+      <form id="login-form" class="card form-card">
+        <label for="login-email">Email</label>
+        <input id="login-email" type="email" placeholder="you@example.com" required autocomplete="email">
+        <label for="login-password">Password</label>
+        <input id="login-password" type="password" placeholder="••••••••" required autocomplete="current-password">
+        <button type="submit" class="btn btn-primary">Log in</button>
+      </form>
+      <button class="link" id="forgot-password">Forgot password?</button>
+      <button class="link" id="back-to-name">Just play as a guest instead</button>
+    </div>`;
+
+  document.getElementById("login-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      adoptUser(await backend.login(
+        document.getElementById("login-email").value,
+        document.getElementById("login-password").value
+      ));
+      toast(`Welcome back, ${state.user.username}!`);
+      await enterHome();
+    } catch (error) {
+      toast(error.serverMessage || "Could not log in.");
+    }
+  });
+
+  document.getElementById("forgot-password").addEventListener("click", async () => {
+    const email = document.getElementById("login-email").value.trim() ||
+      prompt("Enter your account email:")?.trim();
+    if (!email) return;
+    try {
+      await backend.forgotPassword(email);
+      toast("Check your email for a reset link.");
+    } catch (error) {
+      toast(error.serverMessage || "Could not send the reset email.");
+    }
+  });
+
+  document.getElementById("back-to-name").addEventListener("click", () => {
+    state.view = state.user?.username ? "home" : "name";
+    render();
+  });
+}
+
+function renderRegisterScreen() {
+  app.innerHTML = `
+    ${topBarHtml("")}
+    <div class="screen center">
+      <h1 class="headline-sm">Save your account</h1>
+      <p class="muted">Keep your games and matches, and log in from any device.</p>
+      <form id="register-form" class="card form-card">
+        <label for="register-email">Email</label>
+        <input id="register-email" type="email" placeholder="you@example.com" required autocomplete="email">
+        <label for="register-password">Password <span class="muted">(8+ characters)</span></label>
+        <input id="register-password" type="password" placeholder="••••••••" required minlength="8" autocomplete="new-password">
+        <button type="submit" class="btn btn-primary">Create login</button>
+      </form>
+      <button class="link" id="back-home">Back to home</button>
+    </div>`;
+
+  bindBrandHome();
+  document.getElementById("register-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      adoptUser(await backend.register({
+        user_id: state.user?.id,
+        username: state.user?.username,
+        email: document.getElementById("register-email").value,
+        password: document.getElementById("register-password").value,
+      }));
+      toast("Account saved — you can log in anywhere now!");
+      state.view = "home";
+      lastRenderKey = null;
+      render();
+    } catch (error) {
+      toast(error.serverMessage || "Could not create the account.");
+    }
+  });
+
+  document.getElementById("back-home").addEventListener("click", () => {
+    state.view = "home";
+    render();
+  });
+}
+
+function renderResetScreen() {
+  app.innerHTML = `
+    <div class="screen center">
+      <img src="/logo.png" alt="WannaWatch" class="logo">
+      <h1 class="headline-sm">Set a new password</h1>
+      <form id="reset-form" class="card form-card">
+        <label for="reset-password">New password <span class="muted">(8+ characters)</span></label>
+        <input id="reset-password" type="password" placeholder="••••••••" required minlength="8" autocomplete="new-password">
+        <button type="submit" class="btn btn-primary">Save and log in</button>
+      </form>
+    </div>`;
+
+  document.getElementById("reset-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      adoptUser(await backend.resetPassword(state.resetToken, document.getElementById("reset-password").value));
+      state.resetToken = null;
+      toast("Password updated!");
+      await enterHome();
+    } catch (error) {
+      toast(error.serverMessage || "Could not reset the password.");
+    }
+  });
 }
 
 // ---------- home screen ----------
@@ -384,10 +605,11 @@ function renderHomeScreen() {
     <div class="screen">
       <div class="hero">
         <h1 class="headline">Movie night, <span class="accent">solved</span>.</h1>
-        <p class="muted">Start a game, share the code, swipe the same movies. See what you all match on.</p>
+        <p class="muted">Start a game, share the code, swipe the same movies. The more you play, the better your decks get — curated from what everyone likes.</p>
       </div>
 
-      <button class="btn btn-primary btn-big" id="create-game">+ Create a game</button>
+      <button class="btn btn-primary btn-big" id="quick-play">▶ Quick play</button>
+      <button class="btn btn-ghost" id="create-game">Custom game (optional filters)</button>
 
       <form id="join-form" class="card form-card">
         <label for="join-code">Have a game code?</label>
@@ -402,8 +624,23 @@ function renderHomeScreen() {
         <div id="games-list"><p class="muted">Loading…</p></div>
       </section>
 
-      <button class="link" id="view-matches">View past matches with friends</button>
+      <button class="link" id="view-history">See previous games</button>
+
+      ${state.user.email
+        ? `<p class="muted center-text">Logged in as ${esc(state.user.email)} · <button class="link inline-link" id="logout">Log out</button></p>`
+        : `<section class="card account-card">
+             <div>
+               <strong>Playing as a guest</strong>
+               <p class="muted">Create a login to keep your games and play from any device.</p>
+             </div>
+             <button class="btn btn-secondary" id="save-account">Create login</button>
+           </section>`}
     </div>`;
+
+  document.getElementById("quick-play").addEventListener("click", (event) => {
+    event.target.disabled = true;
+    quickPlay();
+  });
 
   document.getElementById("create-game").addEventListener("click", () => {
     state.view = "create";
@@ -424,9 +661,18 @@ function renderHomeScreen() {
     render();
   });
 
-  document.getElementById("view-matches").addEventListener("click", () => {
-    state.view = "matches";
+  document.getElementById("view-history").addEventListener("click", () => {
+    state.view = "history";
     render();
+  });
+
+  document.getElementById("save-account")?.addEventListener("click", () => {
+    state.view = "register";
+    render();
+  });
+
+  document.getElementById("logout")?.addEventListener("click", () => {
+    if (confirm("Log out on this device?")) logout();
   });
 
   renderGamesList();
@@ -464,7 +710,8 @@ async function renderCreateScreen() {
   app.innerHTML = `
     ${topBarHtml("")}
     <div class="screen">
-      <h1 class="headline-sm">Set up your movie list</h1>
+      <h1 class="headline-sm">Custom game</h1>
+      <p class="muted">Everything here is optional. Your deck is curated from what everyone playing has liked before — filters just narrow it down.</p>
       <form id="create-form">
         <section class="card form-card">
           <label>Streaming services <span class="muted">(optional)</span></label>
@@ -655,7 +902,6 @@ function renderLobbyScreen() {
       if (!goSolo) return;
     }
     sendReady();
-    fetchMovies();
   });
 
   document.getElementById("leave-game").addEventListener("click", leaveGame);
@@ -718,7 +964,8 @@ function renderMatchScreen() {
     </div>`;
 
   bindBrandHome();
-  updateDeckDom();
+  buildDeckDom();
+  attachDeckGestures(document.getElementById("deck"));
 
   document.getElementById("nope-button").addEventListener("click", () => swipeTopCard(false));
   document.getElementById("like-button").addEventListener("click", () => swipeTopCard(true));
@@ -751,98 +998,136 @@ function movieCardHtml(movie) {
     </div>`;
 }
 
-function updateDeckDom() {
+function buildDeckDom() {
   const deck = document.getElementById("deck");
   if (!deck) return;
-
-  const queue = unswipedMovies();
-  const counter = document.getElementById("deck-counter");
-  if (counter) counter.textContent = `${queue.length} movie${queue.length === 1 ? "" : "s"} left`;
-
-  deck.innerHTML = queue.slice(0, 3).map(movieCardHtml).reverse().join("");
-
-  const cards = deck.querySelectorAll(".movie-card");
-  const topCard = cards[cards.length - 1];
-  if (topCard) {
-    const movie = queue[0];
-    attachSwipeHandlers(topCard, movie);
-  }
+  deck.innerHTML = unswipedMovies().slice(0, 3).map(movieCardHtml).reverse().join("");
+  updateDeckCounter();
 }
 
-function attachSwipeHandlers(card, movie) {
+function updateDeckCounter() {
+  const counter = document.getElementById("deck-counter");
+  if (!counter) return;
+  const count = unswipedMovies().length;
+  counter.textContent = `${count} movie${count === 1 ? "" : "s"} left`;
+}
+
+function topCardEl(deck) {
+  const cards = deck.querySelectorAll(".movie-card:not(.flying)");
+  return cards[cards.length - 1] || null;
+}
+
+function movieForCard(card) {
+  return state.movies.find((m) => m.id === Number(card.dataset.id));
+}
+
+// Adds the next queued card underneath the visible stack, so swipes never
+// rebuild the deck DOM mid-animation.
+function revealNextCard() {
+  const deck = document.getElementById("deck");
+  if (!deck) return;
+  const visibleIds = new Set(
+    [...deck.querySelectorAll(".movie-card:not(.flying)")].map((c) => Number(c.dataset.id))
+  );
+  const next = unswipedMovies().slice(0, 3).find((m) => !visibleIds.has(m.id));
+  if (next) deck.insertAdjacentHTML("afterbegin", movieCardHtml(next));
+}
+
+function swipeThreshold() {
+  return Math.min(120, window.innerWidth * 0.28);
+}
+
+// Pointer-drag gestures on the whole deck area (not just the card), so a
+// swipe started anywhere on the play area moves the top card. The deck has
+// touch-action: none, so the browser never turns the gesture into a scroll.
+function attachDeckGestures(deck) {
+  let card = null;
+  let movie = null;
+  let stamps = null;
   let startX = 0;
   let startY = 0;
   let deltaX = 0;
   let dragging = false;
   let moved = false;
+  let samples = [];
 
-  const threshold = Math.min(130, window.innerWidth * 0.3);
-
-  const setTransform = () => {
-    const rotation = (deltaX / window.innerWidth) * 20;
-    card.style.transform = `translateX(${deltaX}px) rotate(${rotation}deg)`;
-    const likeStamp = card.querySelector(".stamp-like");
-    const nopeStamp = card.querySelector(".stamp-nope");
-    likeStamp.style.opacity = deltaX > 0 ? Math.min(1, deltaX / threshold) : 0;
-    nopeStamp.style.opacity = deltaX < 0 ? Math.min(1, -deltaX / threshold) : 0;
-  };
-
-  card.addEventListener("pointerdown", (event) => {
+  deck.addEventListener("pointerdown", (event) => {
+    card = topCardEl(deck);
+    if (!card) return;
+    movie = movieForCard(card);
+    stamps = {
+      like: card.querySelector(".stamp-like"),
+      nope: card.querySelector(".stamp-nope"),
+    };
     dragging = true;
     moved = false;
     startX = event.clientX;
     startY = event.clientY;
     deltaX = 0;
-    card.setPointerCapture(event.pointerId);
+    samples = [{ x: event.clientX, t: event.timeStamp }];
+    deck.setPointerCapture(event.pointerId);
     card.classList.add("dragging");
   });
 
-  card.addEventListener("pointermove", (event) => {
-    if (!dragging) return;
+  deck.addEventListener("pointermove", (event) => {
+    if (!dragging || !card) return;
     deltaX = event.clientX - startX;
-    if (Math.abs(deltaX) > 8 || Math.abs(event.clientY - startY) > 8) moved = true;
-    setTransform();
+    const deltaY = event.clientY - startY;
+    samples.push({ x: event.clientX, t: event.timeStamp });
+    if (samples.length > 6) samples.shift();
+    if (Math.abs(deltaX) > 6 || Math.abs(deltaY) > 6) moved = true;
+
+    const rotation = (deltaX / window.innerWidth) * 18;
+    card.style.transform = `translate(${deltaX}px, ${deltaY * 0.15}px) rotate(${rotation}deg)`;
+    stamps.like.style.opacity = deltaX > 0 ? Math.min(1, deltaX / swipeThreshold()) : 0;
+    stamps.nope.style.opacity = deltaX < 0 ? Math.min(1, -deltaX / swipeThreshold()) : 0;
   });
 
-  const endDrag = () => {
-    if (!dragging) return;
+  const release = (event) => {
+    if (!dragging || !card) return;
     dragging = false;
     card.classList.remove("dragging");
 
-    if (Math.abs(deltaX) > threshold) {
+    // px/ms over the last few pointer samples; a quick flick counts even if
+    // the card didn't travel the full threshold distance.
+    const first = samples[0];
+    const last = samples[samples.length - 1];
+    const velocity = last.t > first.t ? (last.x - first.x) / (last.t - first.t) : 0;
+    const flicked = Math.abs(velocity) > 0.6 && Math.abs(deltaX) > 30 &&
+      Math.sign(velocity) === Math.sign(deltaX);
+
+    if (Math.abs(deltaX) > swipeThreshold() || flicked) {
       flyOut(card, deltaX > 0, movie);
     } else {
       card.style.transform = "";
-      card.querySelector(".stamp-like").style.opacity = 0;
-      card.querySelector(".stamp-nope").style.opacity = 0;
-      if (!moved) card.classList.toggle("flipped");
+      stamps.like.style.opacity = 0;
+      stamps.nope.style.opacity = 0;
+      if (!moved && event.type === "pointerup") card.classList.toggle("flipped");
     }
+    card = null;
+    movie = null;
     deltaX = 0;
   };
 
-  card.addEventListener("pointerup", endDrag);
-  card.addEventListener("pointercancel", endDrag);
+  deck.addEventListener("pointerup", release);
+  deck.addEventListener("pointercancel", release);
 }
 
 function flyOut(card, liked, movie) {
-  const exitX = liked ? window.innerWidth : -window.innerWidth;
+  const exitX = (liked ? 1 : -1) * Math.max(window.innerWidth, 480);
   card.classList.add("flying");
-  card.style.transform = `translateX(${exitX * 1.2}px) rotate(${liked ? 30 : -30}deg)`;
+  card.style.transform = `translate(${exitX}px, -30px) rotate(${liked ? 30 : -30}deg)`;
   card.querySelector(liked ? ".stamp-like" : ".stamp-nope").style.opacity = 1;
-  setTimeout(() => recordSwipe(movie, liked), 250);
+  setTimeout(() => card.remove(), 350);
+  recordSwipe(movie, liked);
 }
 
 function swipeTopCard(liked) {
-  const queue = unswipedMovies();
-  if (queue.length === 0) return;
   const deck = document.getElementById("deck");
-  const cards = deck.querySelectorAll(".movie-card");
-  const topCard = cards[cards.length - 1];
-  if (topCard) {
-    flyOut(topCard, liked, queue[0]);
-  } else {
-    recordSwipe(queue[0], liked);
-  }
+  if (!deck) return;
+  const card = topCardEl(deck);
+  if (!card) return;
+  flyOut(card, liked, movieForCard(card));
 }
 
 document.addEventListener("keydown", (event) => {
@@ -909,14 +1194,8 @@ async function renderResultsScreen() {
 
   const localMovies = new Map(state.movies.map((m) => [m.id, m]));
   const cards = await Promise.all(matchedIds.slice(0, 30).map(async (id) => {
-    let movie = localMovies.get(id);
-    if (!movie) {
-      try {
-        movie = (await tmdb.movieDetails(id)).movieDetails;
-      } catch {
-        return "";
-      }
-    }
+    const movie = localMovies.get(id) || (await fetchMovieSummary(id));
+    if (!movie) return "";
     const poster = posterUrl(movie.poster_path, "w342");
     const year = movie.release_date ? movie.release_date.slice(0, 4) : "";
     return `
@@ -932,16 +1211,34 @@ async function renderResultsScreen() {
   if (grid.isConnected) grid.innerHTML = cards.join("");
 }
 
-// ---------- friend matches ----------
+// ---------- previous games ----------
 
-async function renderMatchesScreen() {
+const movieSummaryCache = new Map();
+
+async function fetchMovieSummary(id) {
+  if (movieSummaryCache.has(id)) return movieSummaryCache.get(id);
+  try {
+    const movie = await tmdb.movie(id);
+    movieSummaryCache.set(id, movie);
+    return movie;
+  } catch {
+    movieSummaryCache.set(id, null);
+    return null;
+  }
+}
+
+function matchedIdsFor(game) {
+  const lists = (game.players || []).map((p) => p.liked_movie_ids || []);
+  return lists.length ? lists.reduce((a, b) => a.filter((id) => b.includes(id))) : [];
+}
+
+async function renderHistoryScreen() {
   app.innerHTML = `
     ${topBarHtml("")}
     <div class="screen">
-      <h1 class="headline-sm">Matches with friends</h1>
-      <p class="muted">Pick a friend to see every movie you've both liked, across all your games.</p>
-      <div id="friend-list" class="card list-card"><p class="muted">Loading…</p></div>
-      <div id="friend-matches"></div>
+      <h1 class="headline-sm">Previous games</h1>
+      <p class="muted">Tap a game to see what everyone matched on — or flip to see all likes.</p>
+      <div id="history-content"><p class="muted">Loading…</p></div>
       <button class="link" id="back-home">Back to home</button>
     </div>`;
 
@@ -951,54 +1248,115 @@ async function renderMatchesScreen() {
     render();
   });
 
-  let friends = [];
+  let games = [];
   try {
-    friends = (await backend.friendsIndex(state.user.id)).filter((f) => f.id !== state.user.id);
+    games = await backend.previousGames(state.user.id);
   } catch {
-    // fall through to empty state
+    // shows the empty state below
   }
 
-  const list = document.getElementById("friend-list");
-  if (!list) return;
+  const container = document.getElementById("history-content");
+  if (!container) return;
 
-  if (friends.length === 0) {
-    list.innerHTML = `<p class="muted">No friends yet — play a game together first!</p>`;
+  if (games.length === 0) {
+    container.innerHTML = `<p class="muted">No finished games yet — play one first!</p>`;
+    return;
+  }
+  renderHistoryList(container, games);
+}
+
+function renderHistoryList(container, games) {
+  container.innerHTML = games.map((game) => {
+    const date = game.finished_at
+      ? new Date(game.finished_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+      : "";
+    const names = game.players.map((p) => esc(p.user?.username)).join(", ");
+    const solo = game.players.length === 1;
+    const count = matchedIdsFor(game).length;
+    const label = solo
+      ? `${count} like${count === 1 ? "" : "s"}`
+      : `${count} match${count === 1 ? "" : "es"}`;
+    return `
+      <button class="game-row" data-id="${game.id}">
+        <span class="game-code">${esc(game.entry_code)}</span>
+        <span class="game-players">${names}</span>
+        <span class="match-badge">${label}</span>
+        <span class="muted">${date}</span>
+      </button>`;
+  }).join("");
+
+  container.querySelectorAll(".game-row").forEach((row) => {
+    row.addEventListener("click", () => {
+      const game = games.find((g) => g.id === Number(row.dataset.id));
+      renderHistoryDetail(container, games, game, "matches");
+    });
+  });
+}
+
+async function renderHistoryDetail(container, games, game, tab) {
+  const matchedIds = matchedIdsFor(game);
+  const playerCount = game.players.length;
+
+  const likersByMovie = new Map();
+  game.players.forEach((player) => {
+    (player.liked_movie_ids || []).forEach((id) => {
+      if (!likersByMovie.has(id)) likersByMovie.set(id, []);
+      likersByMovie.get(id).push(player.user?.username || "Someone");
+    });
+  });
+  const allLikedIds = [...likersByMovie.keys()]
+    .sort((a, b) => likersByMovie.get(b).length - likersByMovie.get(a).length);
+
+  const ids = tab === "matches" ? matchedIds : allLikedIds;
+
+  container.innerHTML = `
+    <div class="history-header">
+      <button class="link" id="history-back">← All games</button>
+      <span class="code-pill">${esc(game.entry_code)}</span>
+    </div>
+    <p class="muted">Played by ${game.players.map((p) => esc(p.user?.username)).join(", ")}</p>
+    <div class="tab-row">
+      <button class="tab ${tab === "matches" ? "active" : ""}" data-tab="matches">
+        ${playerCount === 1 ? "Likes" : "Matches"} (${matchedIds.length})
+      </button>
+      <button class="tab ${tab === "all" ? "active" : ""}" data-tab="all">All likes (${allLikedIds.length})</button>
+    </div>
+    <div id="history-grid" class="results-grid">${ids.length ? `<p class="muted">Loading movies…</p>` : ""}</div>`;
+
+  document.getElementById("history-back").addEventListener("click", () => renderHistoryList(container, games));
+  container.querySelectorAll(".tab").forEach((button) => {
+    button.addEventListener("click", () => renderHistoryDetail(container, games, game, button.dataset.tab));
+  });
+
+  const grid = document.getElementById("history-grid");
+  if (ids.length === 0) {
+    grid.outerHTML = `<p class="muted">${tab === "matches" && playerCount > 1
+      ? "No matches in this game."
+      : "No likes in this game."}</p>`;
     return;
   }
 
-  list.innerHTML = friends
-    .map((f) => `<button class="game-row friend-row" data-id="${f.id}"><span>${esc(f.username)}</span><span class="game-resume">See matches →</span></button>`)
-    .join("");
+  const cards = await Promise.all(ids.slice(0, 30).map(async (id) => {
+    const movie = await fetchMovieSummary(id);
+    if (!movie) return "";
+    const likers = likersByMovie.get(id) || [];
+    const everyone = playerCount > 1 && likers.length === playerCount;
+    const year = movie.release_date ? movie.release_date.slice(0, 4) : "";
+    const subtitle = tab === "all"
+      ? (everyone ? "⭐ Everyone liked this" : `Liked by ${likers.map(esc).join(", ")}`)
+      : `${year} · ★ ${movie.vote_average ? movie.vote_average.toFixed(1) : "–"}`;
+    const poster = posterUrl(movie.poster_path, "w342");
+    return `
+      <div class="result-card">
+        ${poster ? `<img src="${poster}" alt="${esc(movie.title)}">` : `<div class="poster-missing">${esc(movie.title)}</div>`}
+        <div class="result-info">
+          <strong>${esc(movie.title)}</strong>
+          <span class="muted">${subtitle}</span>
+        </div>
+      </div>`;
+  }));
 
-  list.querySelectorAll(".friend-row").forEach((row) => {
-    row.addEventListener("click", async () => {
-      const container = document.getElementById("friend-matches");
-      container.innerHTML = `<p class="muted center-text">Loading matches…</p>`;
-      try {
-        const { ourLikedMovieIds } = await backend.friendsMovieIds(state.user.id, row.dataset.id);
-        if (ourLikedMovieIds.length === 0) {
-          container.innerHTML = `<p class="muted center-text">No shared likes with this friend yet.</p>`;
-          return;
-        }
-        const cards = await Promise.all(ourLikedMovieIds.slice(0, 24).map(async (id) => {
-          try {
-            const movie = (await tmdb.movieDetails(id)).movieDetails;
-            const poster = posterUrl(movie.poster_path, "w342");
-            return `
-              <div class="result-card">
-                ${poster ? `<img src="${poster}" alt="${esc(movie.title)}">` : `<div class="poster-missing">${esc(movie.title)}</div>`}
-                <div class="result-info"><strong>${esc(movie.title)}</strong></div>
-              </div>`;
-          } catch {
-            return "";
-          }
-        }));
-        container.innerHTML = `<div class="results-grid">${cards.join("")}</div>`;
-      } catch {
-        container.innerHTML = `<p class="muted center-text">Could not load matches.</p>`;
-      }
-    });
-  });
+  if (grid.isConnected) grid.innerHTML = cards.join("");
 }
 
 boot();

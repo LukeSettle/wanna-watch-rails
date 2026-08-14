@@ -22,14 +22,34 @@ async function backendRequest(path, { method = "GET", body } = {}) {
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!response.ok) {
-    const error = new Error(`Request failed: ${method} ${path} (${response.status})`);
+    const data = await response.json().catch(() => null);
+    const error = new Error(data?.error || `Request failed: ${method} ${path} (${response.status})`);
     error.status = response.status;
+    error.serverMessage = data?.error;
     throw error;
   }
   return response.json();
 }
 
 const backend = {
+  me() {
+    return backendRequest("/auth/me");
+  },
+  register(params) {
+    return backendRequest("/auth/register", { method: "POST", body: params });
+  },
+  login(email, password) {
+    return backendRequest("/auth/login", { method: "POST", body: { email, password } });
+  },
+  logout() {
+    return backendRequest("/auth/logout", { method: "POST" });
+  },
+  forgotPassword(email) {
+    return backendRequest("/auth/forgot", { method: "POST", body: { email } });
+  },
+  resetPassword(token, password) {
+    return backendRequest("/auth/reset", { method: "POST", body: { token, password } });
+  },
   upsertUser(user) {
     return backendRequest("/users/upsert", { method: "POST", body: user });
   },
@@ -45,39 +65,34 @@ const backend = {
   findGameByEntryCode(entryCode) {
     return backendRequest(`/games/find_by_entry_code?entry_code=${encodeURIComponent(entryCode)}`);
   },
+  joinGame(gameId, userId) {
+    return backendRequest(`/games/${gameId}/join`, { method: "POST", body: { user_id: userId } });
+  },
+  ready(gameId, userId) {
+    return backendRequest(`/games/${gameId}/ready`, { method: "POST", body: { user_id: userId } });
+  },
+  finishMatching(gameId, userId, likedMovieIds) {
+    return backendRequest(`/games/${gameId}/finish_matching`, {
+      method: "POST",
+      body: { user_id: userId, liked_movie_ids: likedMovieIds },
+    });
+  },
   keepPlaying(params) {
     return backendRequest("/games/keep_playing", { method: "POST", body: params });
   },
-  friendsIndex(userId) {
-    return backendRequest(`/friends/index?user_id=${userId}`);
+  previousGames(userId) {
+    return backendRequest(`/games/previous?user_id=${userId}`);
   },
-  friendsMovieIds(userId, friendId) {
-    return backendRequest(`/friends/movie_ids?user_id=${userId}&friend_id=${friendId}`);
+  gameDeck(gameId) {
+    return backendRequest(`/games/${gameId}/deck`);
   },
 };
 
 const tmdb = {
-  // game.query stores an axios-style request ({ method, url, params }) written
-  // by whichever client created the game, so every player runs the same search.
-  async discover(game) {
-    const options = JSON.parse(game.query);
-    const page = ((options.params.page + game.load_more_count) % 500) + 1;
-    const params = new URLSearchParams({ ...options.params, page });
-    const response = await fetch(`${options.url}&${params}`);
-    if (!response.ok) throw new Error(`TMDB discover failed (${response.status})`);
-    return (await response.json()).results;
-  },
-
-  async movieDetails(movieId) {
-    const [details, providers] = await Promise.all([
-      fetch(`https://api.themoviedb.org/3/movie/${movieId}?api_key=${TMDB_API_KEY}`),
-      fetch(`https://api.themoviedb.org/3/movie/${movieId}/watch/providers?api_key=${TMDB_API_KEY}`),
-    ]);
-    if (!details.ok) throw new Error(`TMDB details failed (${details.status})`);
-    return {
-      movieDetails: await details.json(),
-      watchProviders: providers.ok ? await providers.json() : { results: {} },
-    };
+  async movie(movieId) {
+    const response = await fetch(`https://api.themoviedb.org/3/movie/${movieId}?api_key=${TMDB_API_KEY}`);
+    if (!response.ok) throw new Error(`TMDB movie failed (${response.status})`);
+    return response.json();
   },
 
   async genres() {

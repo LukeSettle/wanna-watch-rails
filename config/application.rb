@@ -29,6 +29,9 @@ module WannaWatchRails
     # Skip views, helpers and assets when generating a new resource.
     config.api_only = true
 
+    # Cookie support for the web client's login session.
+    config.middleware.use ActionDispatch::Cookies
+
     config.action_cable.disable_request_forgery_protection = true
 
     config.hosts << "wanna-watch-rails.onrender.com"

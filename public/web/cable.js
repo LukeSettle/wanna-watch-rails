@@ -54,12 +54,8 @@ class Cable {
     }
   }
 
-  perform(channelParams, action, data = {}) {
-    this.ws.send(JSON.stringify({
-      command: "message",
-      identifier: this.identifierFor(channelParams),
-      data: JSON.stringify({ action, ...data }),
-    }));
+  isOpen() {
+    return this.ws.readyState === WebSocket.OPEN;
   }
 
   close() {

@@ -1,4 +1,14 @@
 class User < ApplicationRecord
+  has_secure_password validations: false
+
+  before_validation { self.email = email.to_s.strip.downcase.presence }
+  validates :email, uniqueness: true, format: { with: URI::MailTo::EMAIL_REGEXP }, allow_nil: true
+
+  # Never leak credentials or emails in game payloads and broadcasts.
+  def as_json(options = {})
+    super({ except: [:email, :password_digest, :reset_token_digest, :reset_token_sent_at] }.merge(options))
+  end
+
   has_many :players
   has_many :owned_games, class_name: "Game", foreign_key: "user_id"
 

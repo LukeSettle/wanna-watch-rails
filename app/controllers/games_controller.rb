@@ -52,21 +52,13 @@ class GamesController < ApiController
     game = Game.find(params[:game_id])
     user = User.find(params[:user_id])
 
-    game.update(game_params.merge(finished_at: nil, load_more_count: game.load_more_count + 1))
+    game.update(finished_at: nil, load_more_count: game.load_more_count + 1)
     game.players.update(finished_at: nil)
 
-    ActionCable.server.broadcast(
-      "game_#{game.id}",
-      {
-        type: 'system',
-        message: "#{user.username} continued the game",
-        game: game.reload.to_json(include: { players: { include: :user } })
-      }
-    )
-
+    broadcast_to_game(game, "#{user.username} continued the game")
     game.broadcast_game_index_updated
 
-    render json: {}, status: 200
+    render_game(game)
   end
 
   def deck

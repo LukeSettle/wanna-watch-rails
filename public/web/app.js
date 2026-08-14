@@ -16,6 +16,7 @@ const state = {
 
 let cable = null;
 let lastRenderKey = null;
+let ignoreClicksUntil = 0;
 
 const app = document.getElementById("app");
 
@@ -33,6 +34,20 @@ function toast(message) {
   el.hidden = false;
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => { el.hidden = true; }, 2500);
+}
+
+function onTap(el, handler) {
+  if (!el) return;
+  el.addEventListener("pointerup", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (Date.now() < ignoreClicksUntil) return;
+    handler(event);
+  });
+  el.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  });
 }
 
 function storageKey(suffix) {
@@ -127,6 +142,7 @@ function pendingEntryCode() {
 
 async function enterHome() {
   connectCable();
+  state.view = "home";
 
   const entryCode = pendingEntryCode();
   if (entryCode) {
@@ -134,8 +150,6 @@ async function enterHome() {
     const joined = await joinGameByCode(entryCode);
     if (joined) return;
   }
-
-  state.view = "home";
   cable.subscribe({ channel: "UserGamesChannel" });
   render();
   refreshGamesList();
@@ -313,7 +327,9 @@ async function sendFinished() {
 
 async function keepPlaying() {
   try {
-    await backend.keepPlaying({ game_id: state.game.id, user_id: state.user.id });
+    applyGameUpdate(await backend.keepPlaying({ game_id: state.game.id, user_id: state.user.id }));
+    render();
+    fetchMovies();
   } catch {
     toast("Could not start another round.");
   }
@@ -351,7 +367,7 @@ function unswipedMovies() {
   return state.movies.filter((m) => !m.hidden);
 }
 
-function recordSwipe(movie, liked) {
+function recordSwipe(movie, liked, { deferFinish } = {}) {
   movie.hidden = true;
 
   const swiped = new Set(loadJSON(swipedIdsKey(), []));
@@ -365,8 +381,11 @@ function recordSwipe(movie, liked) {
   }
 
   if (unswipedMovies().length === 0) {
-    sendFinished();
-    render();
+    if (!deferFinish) {
+      ignoreClicksUntil = Date.now() + 400;
+      sendFinished();
+      render();
+    }
   } else {
     updateDeckCounter();
     revealNextCard();
@@ -395,6 +414,7 @@ function render() {
     return;
   }
   lastRenderKey = key;
+  document.getElementById("movie-modal")?.setAttribute("hidden", "");
 
   const renderers = {
     name: renderNameScreen,
@@ -707,41 +727,90 @@ let genresCache = null;
 
 async function renderCreateScreen() {
   const currentYear = new Date().getFullYear();
+  const eraPresets = [
+    { label: "Any time", from: 1950, to: currentYear },
+    { label: "New", from: 2020, to: currentYear },
+    { label: "2010s", from: 2010, to: 2019 },
+    { label: "2000s", from: 2000, to: 2009 },
+    { label: "90s", from: 1990, to: 1999 },
+    { label: "80s", from: 1980, to: 1989 },
+    { label: "Classics", from: 1950, to: 1979 },
+  ];
+  const ratingPresets = [
+    { label: "Any rating", min: 0 },
+    { label: "Decent 6+", min: 6 },
+    { label: "Good 7+", min: 7 },
+    { label: "Great 8+", min: 8 },
+  ];
+  const runtimePresets = [
+    { label: "Any length", min: 0, max: 400 },
+    { label: "Quick · under 90 min", min: 0, max: 90 },
+    { label: "Standard · under 2 hrs", min: 0, max: 120 },
+    { label: "Long · 2 hrs+", min: 120, max: 400 },
+  ];
+  const languagePresets = [
+    { label: "English", value: "en" },
+    { label: "Spanish", value: "es" },
+    { label: "French", value: "fr" },
+    { label: "Korean", value: "ko" },
+    { label: "Japanese", value: "ja" },
+    { label: "German", value: "de" },
+    { label: "Italian", value: "it" },
+  ];
+
+  const presetChips = (items, extra) => items.map((item, index) => `
+    <button type="button" class="chip ${index === 0 ? "selected" : ""}" ${extra(item)}>${esc(item.label)}</button>
+  `).join("");
 
   app.innerHTML = `
     ${topBarHtml("")}
     <div class="screen">
       <h1 class="headline-sm">Custom game</h1>
-      <p class="muted">Everything here is optional. Your deck is curated from what everyone playing has liked before — filters just narrow it down.</p>
+      <p class="muted">Skip anything you don't care about — we'll still curate from what everyone playing has liked. Filters just steer the list.</p>
       <form id="create-form">
         <section class="card form-card">
-          <label>Streaming services <span class="muted">(optional)</span></label>
+          <label>Where do you watch?</label>
+          <p class="hint">Leave blank for any service. We'll remember your picks.</p>
           <div class="chips" id="provider-chips">
             ${PROVIDERS.map((p) => `<button type="button" class="chip" data-value="${p.code}">${esc(p.title)}</button>`).join("")}
           </div>
         </section>
 
         <section class="card form-card">
-          <label>Genres <span class="muted">(optional)</span></label>
+          <label>What are you in the mood for?</label>
+          <p class="hint">Pick a few genres, or none to keep it open.</p>
           <div class="chips" id="genre-chips"><span class="muted">Loading genres…</span></div>
         </section>
 
         <section class="card form-card">
-          <label for="min-rating">Minimum rating: <strong id="min-rating-label">Any</strong></label>
-          <input type="range" id="min-rating" min="0" max="8" step="1" value="0">
-
-          <label>Release years</label>
-          <div class="year-row">
-            <select id="year-from"></select>
-            <span class="muted">to</span>
-            <select id="year-to"></select>
+          <label>When was it made?</label>
+          <div class="chips single" id="era-chips">
+            ${presetChips(eraPresets, (item) => `data-from="${item.from}" data-to="${item.to}"`)}
           </div>
-
-          <label for="max-runtime">Max runtime: <strong id="max-runtime-label">Any</strong></label>
-          <input type="range" id="max-runtime" min="60" max="240" step="10" value="240">
         </section>
 
-        <div class="button-row">
+        <section class="card form-card">
+          <label>How good does it need to be?</label>
+          <div class="chips single" id="rating-chips">
+            ${presetChips(ratingPresets, (item) => `data-min="${item.min}"`)}
+          </div>
+        </section>
+
+        <section class="card form-card">
+          <label>How long is movie night?</label>
+          <div class="chips single" id="runtime-chips">
+            ${presetChips(runtimePresets, (item) => `data-min="${item.min}" data-max="${item.max}"`)}
+          </div>
+        </section>
+
+        <section class="card form-card">
+          <label>Language <span class="muted">(optional)</span></label>
+          <div class="chips" id="language-chips">
+            ${languagePresets.map((item) => `<button type="button" class="chip" data-value="${item.value}">${esc(item.label)}</button>`).join("")}
+          </div>
+        </section>
+
+        <div class="button-row sticky-actions">
           <button type="button" class="btn btn-ghost" id="cancel-create">Back</button>
           <button type="submit" class="btn btn-primary">Create game</button>
         </div>
@@ -750,37 +819,27 @@ async function renderCreateScreen() {
 
   bindBrandHome();
 
-  const yearFrom = document.getElementById("year-from");
-  const yearTo = document.getElementById("year-to");
-  for (let year = currentYear; year >= 1950; year--) {
-    yearFrom.insertAdjacentHTML("beforeend", `<option value="${year}">${year}</option>`);
-    yearTo.insertAdjacentHTML("beforeend", `<option value="${year}">${year}</option>`);
-  }
-  yearFrom.value = 1980;
-  yearTo.value = currentYear;
-
-  const minRating = document.getElementById("min-rating");
-  minRating.addEventListener("input", () => {
-    document.getElementById("min-rating-label").textContent =
-      minRating.value === "0" ? "Any" : `${minRating.value}+`;
-  });
-
-  const maxRuntime = document.getElementById("max-runtime");
-  maxRuntime.addEventListener("input", () => {
-    document.getElementById("max-runtime-label").textContent =
-      maxRuntime.value === "240" ? "Any" : `${maxRuntime.value} min`;
-  });
-
-  const bindChips = (containerId) => {
+  const toggleMulti = (containerId) => {
     document.getElementById(containerId).addEventListener("click", (event) => {
-      const chip = event.target.closest(".chip");
-      if (chip) chip.classList.toggle("selected");
+      event.target.closest(".chip")?.classList.toggle("selected");
     });
   };
-  bindChips("provider-chips");
-  bindChips("genre-chips");
+  const selectOne = (containerId) => {
+    document.getElementById(containerId).addEventListener("click", (event) => {
+      const chip = event.target.closest(".chip");
+      if (!chip) return;
+      document.querySelectorAll(`#${containerId} .chip`).forEach((el) => el.classList.remove("selected"));
+      chip.classList.add("selected");
+    });
+  };
 
-  // Pre-select the user's saved streaming services.
+  toggleMulti("provider-chips");
+  toggleMulti("genre-chips");
+  toggleMulti("language-chips");
+  selectOne("era-chips");
+  selectOne("rating-chips");
+  selectOne("runtime-chips");
+
   (state.user.providers || []).forEach((code) => {
     document.querySelector(`#provider-chips .chip[data-value="${code}"]`)?.classList.add("selected");
   });
@@ -794,14 +853,17 @@ async function renderCreateScreen() {
     event.preventDefault();
     const selected = (id) =>
       [...document.querySelectorAll(`#${id} .chip.selected`)].map((chip) => chip.dataset.value);
+    const era = document.querySelector("#era-chips .chip.selected");
+    const rating = document.querySelector("#rating-chips .chip.selected");
+    const runtime = document.querySelector("#runtime-chips .chip.selected");
 
     const values = {
       providers: selected("provider-chips"),
       genres: selected("genre-chips"),
-      languages: [],
-      userScoreRange: [Number(minRating.value), 10],
-      releaseYearRange: [Number(yearFrom.value), Number(yearTo.value)],
-      runtimeRange: [0, Number(maxRuntime.value)],
+      languages: selected("language-chips"),
+      userScoreRange: [Number(rating?.dataset.min || 0), 10],
+      releaseYearRange: [Number(era?.dataset.from || 1950), Number(era?.dataset.to || currentYear)],
+      runtimeRange: [Number(runtime?.dataset.min || 0), Number(runtime?.dataset.max || 400)],
     };
 
     try {
@@ -908,7 +970,174 @@ function renderLobbyScreen() {
   document.getElementById("leave-game").addEventListener("click", leaveGame);
 }
 
-// ---------- matching (swipe deck) ----------
+// ---------- movie details ----------
+
+function formatVoteCount(count) {
+  if (!count) return "";
+  if (count >= 1000) return `${(count / 1000).toFixed(count >= 10000 ? 0 : 1)}k ratings`;
+  return `${count} ratings`;
+}
+
+function trailerKey(movie) {
+  const videos = movie.videos?.results || [];
+  const trailer = videos.find((v) => v.site === "YouTube" && v.type === "Trailer" && v.official)
+    || videos.find((v) => v.site === "YouTube" && v.type === "Trailer")
+    || videos.find((v) => v.site === "YouTube");
+  return trailer?.key || null;
+}
+
+function watchProviders(movie) {
+  const groups = movie["watch/providers"]?.results?.US || {};
+  const seen = new Set();
+  return ["flatrate", "ads", "rent", "buy"].flatMap((kind) =>
+    (groups[kind] || []).filter((provider) => {
+      if (seen.has(provider.provider_id)) return false;
+      seen.add(provider.provider_id);
+      return true;
+    }).map((provider) => ({ ...provider, kind }))
+  );
+}
+
+function movieDetailsHtml(movie, { compact = false } = {}) {
+  const year = movie.release_date ? movie.release_date.slice(0, 4) : "";
+  const runtime = movie.runtime ? `${movie.runtime} min` : "";
+  const genres = (movie.genres || []).map((g) => g.name).join(" · ");
+  const rating = movie.vote_average ? movie.vote_average.toFixed(1) : "–";
+  const votes = formatVoteCount(movie.vote_count);
+  const trailer = trailerKey(movie);
+  const providers = watchProviders(movie);
+  const cast = (movie.credits?.cast || []).slice(0, compact ? 4 : 6);
+  const reviews = (movie.reviews?.results || []).slice(0, compact ? 1 : 2);
+
+  return `
+    <div class="details-block">
+      <h3>${esc(movie.title)} <span class="muted">${year}</span></h3>
+      <p class="rating">★ ${rating} / 10 ${votes ? `<span class="muted">· ${esc(votes)}</span>` : ""}</p>
+      <p class="meta-line">${[runtime, genres].filter(Boolean).map(esc).join(" · ")}</p>
+      <p class="overview">${esc(movie.overview || "No description available.")}</p>
+    </div>
+    ${providers.length ? `
+      <div class="details-block">
+        <h4>Where to watch</h4>
+        <div class="provider-row">
+          ${providers.slice(0, 8).map((p) => `
+            <div class="provider-logo" title="${esc(p.provider_name)} (${p.kind === "flatrate" ? "stream" : p.kind})">
+              ${p.logo_path
+                ? `<img src="${posterUrl(p.logo_path, "w92")}" alt="${esc(p.provider_name)}">`
+                : esc(p.provider_name)}
+            </div>`).join("")}
+        </div>
+        <p class="hint">Streaming data from JustWatch via TMDB.</p>
+      </div>` : ""}
+    ${cast.length ? `
+      <div class="details-block">
+        <h4>Cast</h4>
+        <div class="cast-row">
+          ${cast.map((person) => `
+            <div class="cast-card">
+              ${profileUrl(person.profile_path)
+                ? `<img src="${profileUrl(person.profile_path)}" alt="${esc(person.name)}">`
+                : `<div class="cast-placeholder">${esc((person.name || "?").slice(0, 1))}</div>`}
+              <strong>${esc(person.name)}</strong>
+              <span class="muted">${esc(person.character || "")}</span>
+            </div>`).join("")}
+        </div>
+      </div>` : ""}
+    ${trailer ? `
+      <div class="details-block">
+        <button type="button" class="btn btn-secondary trailer-btn" data-trailer="${esc(trailer)}">▶ Watch trailer</button>
+        <div class="trailer-frame" hidden></div>
+      </div>` : ""}
+    ${reviews.length ? `
+      <div class="details-block">
+        <h4>Reviews</h4>
+        ${reviews.map((review) => {
+          const body = review.content.length > 280 ? `${review.content.slice(0, 280).trim()}…` : review.content;
+          return `<blockquote class="review"><p>${esc(body)}</p><cite>— ${esc(review.author)}</cite></blockquote>`;
+        }).join("")}
+      </div>` : ""}`;
+}
+
+function bindTrailerButtons(root) {
+  root.querySelectorAll("[data-trailer]").forEach((button) => {
+    button.addEventListener("pointerup", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const frame = button.parentElement.querySelector(".trailer-frame");
+      if (!frame || !frame.hidden) return;
+      frame.hidden = false;
+      frame.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${button.dataset.trailer}?rel=0" title="Trailer" allow="encrypted-media; picture-in-picture" allowfullscreen></iframe>`;
+      button.hidden = true;
+    });
+  });
+}
+
+function toggleCardFlip(card, movie, target) {
+  if (card.classList.contains("flipped")) {
+    if (target.closest("[data-trailer], .trailer-frame, iframe, a, button:not([data-flip-back])")) return;
+    card.classList.remove("flipped");
+    return;
+  }
+  card.classList.add("flipped");
+  fillCardDetails(card, movie);
+}
+
+async function fillCardDetails(card, movie) {
+  const panel = card.querySelector(".card-details");
+  if (!panel || panel.dataset.loaded === "1") return;
+  panel.innerHTML = `<p class="muted">Loading details…</p>`;
+  const details = await fetchMovieSummary(movie.id);
+  if (!panel.isConnected) return;
+  if (!details) {
+    panel.innerHTML = `<p class="overview">${esc(movie.overview || "No description available.")}</p><button type="button" class="link" data-flip-back>Tap to flip back</button>`;
+    return;
+  }
+  panel.innerHTML = `${movieDetailsHtml(details, { compact: true })}<button type="button" class="link" data-flip-back>Flip back</button>`;
+  panel.dataset.loaded = "1";
+  bindTrailerButtons(panel);
+}
+
+async function openMovieModal(movieId) {
+  let overlay = document.getElementById("movie-modal");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = "movie-modal";
+    overlay.className = "modal-overlay";
+    document.body.appendChild(overlay);
+  }
+  overlay.innerHTML = `<div class="modal-sheet"><p class="muted">Loading…</p></div>`;
+  overlay.hidden = false;
+
+  const close = () => { overlay.hidden = true; overlay.innerHTML = ""; };
+  overlay.addEventListener("pointerup", (event) => {
+    if (event.target === overlay) close();
+  }, { once: true });
+
+  const movie = await fetchMovieSummary(movieId);
+  if (!overlay.isConnected || overlay.hidden) return;
+  if (!movie) {
+    overlay.innerHTML = `<div class="modal-sheet"><p>Couldn't load that movie.</p><button class="btn btn-ghost" id="modal-close">Close</button></div>`;
+    overlay.querySelector("#modal-close").addEventListener("click", close);
+    return;
+  }
+
+  overlay.innerHTML = `
+    <div class="modal-sheet">
+      <div class="modal-header">
+        <button class="link" id="modal-close">Close</button>
+      </div>
+      ${movie.poster_path ? `<img class="modal-poster" src="${posterUrl(movie.poster_path, "w342")}" alt="${esc(movie.title)}">` : ""}
+      ${movieDetailsHtml(movie)}
+    </div>`;
+  overlay.querySelector("#modal-close").addEventListener("click", close);
+  bindTrailerButtons(overlay);
+}
+
+function bindResultCards(root) {
+  root.querySelectorAll(".result-card[data-id]").forEach((card) => {
+    card.addEventListener("click", () => openMovieModal(Number(card.dataset.id)));
+  });
+}
 
 function renderMatchScreen() {
   if (state.finishedSent && unswipedMovies().length === 0) {
@@ -1103,7 +1332,7 @@ function attachDeckGestures(deck) {
       card.style.transform = "";
       stamps.like.style.opacity = 0;
       stamps.nope.style.opacity = 0;
-      if (!moved && event.type === "pointerup") card.classList.toggle("flipped");
+      if (!moved && event.type === "pointerup") toggleCardFlip(card, movie, event.target);
     }
     card = null;
     movie = null;
@@ -1115,12 +1344,20 @@ function attachDeckGestures(deck) {
 }
 
 function flyOut(card, liked, movie) {
+  const lastCard = unswipedMovies().length <= 1;
   const exitX = (liked ? 1 : -1) * Math.max(window.innerWidth, 480);
   card.classList.add("flying");
   card.style.transform = `translate(${exitX}px, -30px) rotate(${liked ? 30 : -30}deg)`;
   card.querySelector(liked ? ".stamp-like" : ".stamp-nope").style.opacity = 1;
-  setTimeout(() => card.remove(), 350);
-  recordSwipe(movie, liked);
+  recordSwipe(movie, liked, { deferFinish: lastCard });
+  setTimeout(() => {
+    card.remove();
+    if (lastCard) {
+      sendFinished();
+      ignoreClicksUntil = Date.now() + 250;
+      render();
+    }
+  }, 350);
 }
 
 function swipeTopCard(liked) {
@@ -1187,8 +1424,8 @@ async function renderResultsScreen() {
     </div>`;
 
   bindBrandHome();
-  document.getElementById("keep-playing").addEventListener("click", keepPlaying);
-  document.getElementById("go-home").addEventListener("click", leaveGame);
+  onTap(document.getElementById("keep-playing"), keepPlaying);
+  onTap(document.getElementById("go-home"), leaveGame);
 
   const grid = document.getElementById("results-grid");
   if (matchedIds.length === 0) return;
@@ -1200,16 +1437,19 @@ async function renderResultsScreen() {
     const poster = posterUrl(movie.poster_path, "w342");
     const year = movie.release_date ? movie.release_date.slice(0, 4) : "";
     return `
-      <div class="result-card">
+      <button type="button" class="result-card" data-id="${id}">
         ${poster ? `<img src="${poster}" alt="${esc(movie.title)}">` : `<div class="poster-missing">${esc(movie.title)}</div>`}
         <div class="result-info">
           <strong>${esc(movie.title)}</strong>
           <span class="muted">${year} · ★ ${movie.vote_average ? movie.vote_average.toFixed(1) : "–"}</span>
         </div>
-      </div>`;
+      </button>`;
   }));
 
-  if (grid.isConnected) grid.innerHTML = cards.join("");
+  if (grid.isConnected) {
+    grid.innerHTML = cards.join("");
+    bindResultCards(grid);
+  }
 }
 
 // ---------- previous games ----------
@@ -1348,16 +1588,19 @@ async function renderHistoryDetail(container, games, game, tab) {
       : `${year} · ★ ${movie.vote_average ? movie.vote_average.toFixed(1) : "–"}`;
     const poster = posterUrl(movie.poster_path, "w342");
     return `
-      <div class="result-card">
+      <button type="button" class="result-card" data-id="${id}">
         ${poster ? `<img src="${poster}" alt="${esc(movie.title)}">` : `<div class="poster-missing">${esc(movie.title)}</div>`}
         <div class="result-info">
           <strong>${esc(movie.title)}</strong>
           <span class="muted">${subtitle}</span>
         </div>
-      </div>`;
+      </button>`;
   }));
 
-  if (grid.isConnected) grid.innerHTML = cards.join("");
+  if (grid.isConnected) {
+    grid.innerHTML = cards.join("");
+    bindResultCards(grid);
+  }
 }
 
 boot();

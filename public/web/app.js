@@ -38,15 +38,11 @@ function toast(message) {
 
 function onTap(el, handler) {
   if (!el) return;
-  el.addEventListener("pointerup", (event) => {
+  el.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
     if (Date.now() < ignoreClicksUntil) return;
     handler(event);
-  });
-  el.addEventListener("click", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
   });
 }
 
@@ -1058,23 +1054,32 @@ function movieDetailsHtml(movie, { compact = false } = {}) {
       </div>` : ""}`;
 }
 
+function showTrailer(button) {
+  const frame = button.parentElement.querySelector(".trailer-frame");
+  if (!frame || !frame.hidden) return;
+  frame.hidden = false;
+  frame.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${button.dataset.trailer}?rel=0" title="Trailer" allow="encrypted-media; picture-in-picture" allowfullscreen></iframe>`;
+  button.hidden = true;
+}
+
 function bindTrailerButtons(root) {
   root.querySelectorAll("[data-trailer]").forEach((button) => {
-    button.addEventListener("pointerup", (event) => {
+    button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      const frame = button.parentElement.querySelector(".trailer-frame");
-      if (!frame || !frame.hidden) return;
-      frame.hidden = false;
-      frame.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${button.dataset.trailer}?rel=0" title="Trailer" allow="encrypted-media; picture-in-picture" allowfullscreen></iframe>`;
-      button.hidden = true;
+      showTrailer(button);
     });
   });
 }
 
 function toggleCardFlip(card, movie, target) {
+  const trailerBtn = target.closest?.("[data-trailer]");
+  if (trailerBtn) {
+    showTrailer(trailerBtn);
+    return;
+  }
   if (card.classList.contains("flipped")) {
-    if (target.closest("[data-trailer], .trailer-frame, iframe, a, button:not([data-flip-back])")) return;
+    if (target.closest?.(".trailer-frame, iframe, a")) return;
     card.classList.remove("flipped");
     return;
   }
@@ -1332,7 +1337,10 @@ function attachDeckGestures(deck) {
       card.style.transform = "";
       stamps.like.style.opacity = 0;
       stamps.nope.style.opacity = 0;
-      if (!moved && event.type === "pointerup") toggleCardFlip(card, movie, event.target);
+      if (!moved && event.type === "pointerup") {
+        const hit = document.elementFromPoint(event.clientX, event.clientY) || event.target;
+        toggleCardFlip(card, movie, hit);
+      }
     }
     card = null;
     movie = null;

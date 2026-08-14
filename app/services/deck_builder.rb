@@ -104,8 +104,8 @@ class DeckBuilder
     @hidden_gem_candidates ||= discover_pool(
       "sort_by" => "popularity.desc",
       "vote_average.gte" => 7.1,
-      "vote_count.gte" => 150,
-      "vote_count.lte" => 2500,
+      "vote_count.gte" => 500,
+      "vote_count.lte" => 3000,
       "page" => page_for(:gems, 6)
     )
   end
@@ -188,10 +188,18 @@ class DeckBuilder
     end
   end
 
+  DOCUMENTARY_GENRE = 99
+
   def suitable?(movie)
     return false if movie["poster_path"].blank? || movie["adult"]
     return false if @excluded_ids.include?(movie["id"])
     return false if movie["release_date"].blank? || movie["release_date"] > Date.current.iso8601
+    # Documentaries rate high on TMDB but are rarely movie-night picks;
+    # only include them when explicitly requested.
+    if movie["genre_ids"].to_a.include?(DOCUMENTARY_GENRE) &&
+       !@query_params["with_genres"].to_s.split("|").include?(DOCUMENTARY_GENRE.to_s)
+      return false
+    end
 
     matches_filters?(movie)
   end

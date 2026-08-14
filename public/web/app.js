@@ -173,7 +173,19 @@ function gameChannelParams() {
 
 function handleSocketMessage(data) {
   const msg = data.message;
-  if (!msg || msg.type !== "system") return;
+  if (!msg) return;
+
+  if (msg.type === "match") {
+    if (typeof msg.game === "string" && msg.game.length > 2) {
+      const game = JSON.parse(msg.game);
+      if (state.game && game.id === state.game.id) applyGameUpdate(game);
+    }
+    showMatchBanner(msg.movie_id);
+    render();
+    return;
+  }
+
+  if (msg.type !== "system") return;
 
   if (msg.message === "game_index_updated") {
     refreshGamesList();
@@ -188,13 +200,33 @@ function handleSocketMessage(data) {
   render();
 }
 
+function isEndless() {
+  return state.game?.mode === "endless";
+}
+
+function matchedIdsOf(game) {
+  const lists = (game?.players || []).map((p) => p.liked_movie_ids || []);
+  if (lists.length < 2) return [];
+  return lists.reduce((a, b) => a.filter((id) => b.includes(id)));
+}
+
 function applyGameUpdate(game) {
   const previous = state.game;
   state.game = game;
 
-  if (previous && game.load_more_count > previous.load_more_count) {
+  if (previous && game.load_more_count > previous.load_more_count && game.mode !== "endless") {
     state.finishedSent = false;
     fetchMovies();
+  }
+
+  // Endless mode: alert on matches discovered via any update path
+  // (socket broadcast, poll, or another player's swipe).
+  if (previous && game.mode === "endless") {
+    const before = new Set(matchedIdsOf(previous));
+    matchedIdsOf(game).forEach((id) => {
+      if (!before.has(id)) showMatchBanner(id);
+    });
+    updateMatchesPill();
   }
 }
 
@@ -202,11 +234,14 @@ function applyGameUpdate(game) {
 // other players, refresh the game state by polling.
 let pollInFlight = false;
 setInterval(async () => {
+  flushPendingSwipes();
   if (!state.game || pollInFlight) return;
 
   const screen = screenName();
   const socketOpen = cable?.isOpen();
-  if (socketOpen && !["lobby", "waiting", "results"].includes(screen)) return;
+  const needsLivePlayers = ["lobby", "waiting", "results"].includes(screen) ||
+    (screen === "match" && isEndless());
+  if (socketOpen && !needsLivePlayers) return;
 
   pollInFlight = true;
   try {
@@ -282,6 +317,7 @@ async function createGame(values) {
     query: JSON.stringify(query),
     user_id: state.user.id,
     providers: values.providers,
+    mode: values.mode || "classic",
   });
   startGame(game);
 }
@@ -340,17 +376,19 @@ async function fetchMovies() {
   render();
 
   try {
-    const { movies: results } = await backend.gameDeck(state.game.id);
-    if (results.length === 0 && state.movies.every((m) => m.hidden)) {
-      state.noMoreMovies = true;
-    }
+    const { movies: results } = await backend.gameDeck(state.game.id, state.user.id);
     const known = new Set(state.movies.map((m) => m.id));
     const swiped = new Set(loadJSON(swipedIdsKey(), []));
+    let added = 0;
     results.forEach((movie) => {
       if (known.has(movie.id)) return;
       known.add(movie.id);
       state.movies.push({ ...movie, hidden: swiped.has(movie.id) });
+      added += 1;
     });
+    if (added === 0 && unswipedMovies().length === 0) {
+      state.noMoreMovies = true;
+    }
   } catch (error) {
     console.error(error);
     toast("Could not load movies.");
@@ -358,6 +396,38 @@ async function fetchMovies() {
     state.fetchingMovies = false;
     render();
   }
+}
+
+// Endless mode: report each swipe right away; queue and retry if offline.
+function reportSwipe(movieId, liked) {
+  backend.swipe(state.game.id, state.user.id, movieId, liked)
+    .then((res) => {
+      if (res.matched) showMatchBanner(movieId);
+    })
+    .catch(() => {
+      const queue = loadJSON(storageKey("pending_swipes"), []);
+      queue.push({ gameId: state.game.id, movieId, liked });
+      saveJSON(storageKey("pending_swipes"), queue);
+    });
+}
+
+let flushingSwipes = false;
+async function flushPendingSwipes() {
+  if (flushingSwipes || !state.user) return;
+  const queue = loadJSON(storageKey("pending_swipes"), []);
+  if (queue.length === 0) return;
+
+  flushingSwipes = true;
+  const remaining = [];
+  for (const swipe of queue) {
+    try {
+      await backend.swipe(swipe.gameId, state.user.id, swipe.movieId, swipe.liked);
+    } catch {
+      remaining.push(swipe);
+    }
+  }
+  saveJSON(storageKey("pending_swipes"), remaining);
+  flushingSwipes = false;
 }
 
 function unswipedMovies() {
@@ -375,6 +445,15 @@ function recordSwipe(movie, liked, { deferFinish } = {}) {
     const liked_ids = new Set(likedMovieIds());
     liked_ids.add(movie.id);
     saveJSON(likedIdsKey(), [...liked_ids]);
+  }
+
+  if (isEndless()) {
+    reportSwipe(movie.id, liked);
+    updateDeckCounter();
+    revealNextCard();
+    if (unswipedMovies().length < 6) fetchMovies();
+    if (unswipedMovies().length === 0) render();
+    return;
   }
 
   if (unswipedMovies().length === 0) {
@@ -395,6 +474,7 @@ function screenName() {
   if (state.view === "login" || state.view === "reset") return state.view;
   if (!state.user?.username) return "name";
   if (!state.game) return state.view;
+  if (isEndless()) return "match";
   const me = currentPlayer();
   if (state.game.finished_at) return "results";
   if (me?.finished_at) return "waiting";
@@ -432,6 +512,10 @@ function render() {
 
 function renderKeyFor(screen) {
   if (screen === "match") {
+    if (isEndless()) {
+      const empty = unswipedMovies().length === 0;
+      return `endless-${state.game.id}-${empty}-${empty && state.fetchingMovies}-${state.noMoreMovies}`;
+    }
     return `match-${state.game.id}-${state.game.load_more_count}-${state.movies.length}-${state.fetchingMovies}-${state.noMoreMovies}-${state.finishedSent}`;
   }
   if (screen === "lobby" || screen === "waiting") return `${screen}-${state.game.id}`;
@@ -709,6 +793,7 @@ function renderGamesList() {
   container.innerHTML = state.currentGames.map((game) => `
     <button class="game-row" data-code="${esc(game.entry_code)}">
       <span class="game-code">${esc(game.entry_code)}</span>
+      ${game.mode === "endless" ? `<span class="endless-tag">Endless</span>` : ""}
       <span class="game-players">${game.players.map((p) => esc(p.user?.username)).join(", ")}</span>
       <span class="game-resume">Resume →</span>
     </button>`).join("");
@@ -729,9 +814,18 @@ async function renderCreateScreen() {
     { label: "New", from: 2020, to: currentYear },
     { label: "2010s", from: 2010, to: 2019 },
     { label: "2000s", from: 2000, to: 2009 },
-    { label: "90s", from: 1990, to: 1999 },
-    { label: "80s", from: 1980, to: 1989 },
+    { label: "80s & 90s", from: 1980, to: 1999 },
     { label: "Classics", from: 1950, to: 1979 },
+  ];
+  // One-tap bundles that set genres + rating + era underneath.
+  const vibePresets = [
+    { label: "Surprise me", genres: [], rating: 0, era: "Any time" },
+    { label: "Date night", genres: [10749, 35, 18], rating: 6, era: "Any time" },
+    { label: "Laugh out loud", genres: [35], rating: 6, era: "Any time" },
+    { label: "Edge of your seat", genres: [53, 27, 9648, 80], rating: 6, era: "Any time" },
+    { label: "Family night", genres: [10751, 16, 12], rating: 6, era: "Any time" },
+    { label: "Critically acclaimed", genres: [], rating: 8, era: "Any time" },
+    { label: "Throwback", genres: [], rating: 7, era: "80s & 90s" },
   ];
   const ratingPresets = [
     { label: "Any rating", min: 0 },
@@ -763,8 +857,30 @@ async function renderCreateScreen() {
     ${topBarHtml("")}
     <div class="screen">
       <h1 class="headline-sm">Custom game</h1>
-      <p class="muted">Skip anything you don't care about — we'll still curate from what everyone playing has liked. Filters just steer the list.</p>
+      <p class="muted">Pick a mode and a vibe — everything else is optional. We curate from what everyone playing has liked.</p>
       <form id="create-form">
+        <section class="card form-card">
+          <label>Game mode</label>
+          <div class="mode-options">
+            <button type="button" class="mode-option selected" data-mode="classic">
+              <strong>Classic</strong>
+              <span>Everyone swipes the same 20 movies, then you see your matches together.</span>
+            </button>
+            <button type="button" class="mode-option" data-mode="endless">
+              <strong>Endless</strong>
+              <span>One shared list that never stops. Swipe on your own time — everyone gets alerted the moment you match.</span>
+            </button>
+          </div>
+        </section>
+
+        <section class="card form-card">
+          <label>What's the vibe?</label>
+          <p class="hint">One tap sets the mood — tweak anything below after.</p>
+          <div class="chips single" id="vibe-chips">
+            ${vibePresets.map((v, i) => `<button type="button" class="chip ${i === 0 ? "selected" : ""}" data-vibe="${i}">${esc(v.label)}</button>`).join("")}
+          </div>
+        </section>
+
         <section class="card form-card">
           <label>Where do you watch?</label>
           <p class="hint">Leave blank for any service. We'll remember your picks.</p>
@@ -773,48 +889,73 @@ async function renderCreateScreen() {
           </div>
         </section>
 
-        <section class="card form-card">
-          <label>What are you in the mood for?</label>
-          <p class="hint">Pick a few genres, or none to keep it open.</p>
-          <div class="chips" id="genre-chips"><span class="muted">Loading genres…</span></div>
-        </section>
+        <details class="card fine-tune">
+          <summary>Fine-tune <span class="muted">(optional)</span></summary>
 
-        <section class="card form-card">
-          <label>When was it made?</label>
-          <div class="chips single" id="era-chips">
-            ${presetChips(eraPresets, (item) => `data-from="${item.from}" data-to="${item.to}"`)}
-          </div>
-        </section>
+          <div class="form-card">
+            <label>Genres</label>
+            <div class="chips" id="genre-chips"><span class="muted">Loading genres…</span></div>
 
-        <section class="card form-card">
-          <label>How good does it need to be?</label>
-          <div class="chips single" id="rating-chips">
-            ${presetChips(ratingPresets, (item) => `data-min="${item.min}"`)}
-          </div>
-        </section>
+            <label>When was it made?</label>
+            <div class="chips single" id="era-chips">
+              ${presetChips(eraPresets, (item) => `data-from="${item.from}" data-to="${item.to}"`)}
+            </div>
 
-        <section class="card form-card">
-          <label>How long is movie night?</label>
-          <div class="chips single" id="runtime-chips">
-            ${presetChips(runtimePresets, (item) => `data-min="${item.min}" data-max="${item.max}"`)}
-          </div>
-        </section>
+            <label>How good does it need to be?</label>
+            <div class="chips single" id="rating-chips">
+              ${presetChips(ratingPresets, (item) => `data-min="${item.min}"`)}
+            </div>
 
-        <section class="card form-card">
-          <label>Language <span class="muted">(optional)</span></label>
-          <div class="chips" id="language-chips">
-            ${languagePresets.map((item) => `<button type="button" class="chip" data-value="${item.value}">${esc(item.label)}</button>`).join("")}
+            <label>How long is movie night?</label>
+            <div class="chips single" id="runtime-chips">
+              ${presetChips(runtimePresets, (item) => `data-min="${item.min}" data-max="${item.max}"`)}
+            </div>
+
+            <label>Language</label>
+            <div class="chips" id="language-chips">
+              ${languagePresets.map((item) => `<button type="button" class="chip" data-value="${item.value}">${esc(item.label)}</button>`).join("")}
+            </div>
           </div>
-        </section>
+        </details>
 
         <div class="button-row sticky-actions">
           <button type="button" class="btn btn-ghost" id="cancel-create">Back</button>
-          <button type="submit" class="btn btn-primary">Create game</button>
+          <button type="submit" class="btn btn-primary" id="create-submit">Start swiping</button>
         </div>
       </form>
     </div>`;
 
   bindBrandHome();
+
+  document.querySelectorAll(".mode-option").forEach((option) => {
+    option.addEventListener("click", () => {
+      document.querySelectorAll(".mode-option").forEach((el) => el.classList.remove("selected"));
+      option.classList.add("selected");
+    });
+  });
+
+  // A vibe bulk-sets the fine-tune chips underneath.
+  let pendingVibeGenres = null;
+  const applyVibe = (vibe) => {
+    pendingVibeGenres = vibe.genres;
+    document.querySelectorAll("#genre-chips .chip").forEach((chip) => {
+      chip.classList.toggle("selected", vibe.genres.includes(Number(chip.dataset.value)));
+    });
+    document.querySelectorAll("#rating-chips .chip").forEach((chip) => {
+      chip.classList.toggle("selected", Number(chip.dataset.min) === vibe.rating);
+    });
+    document.querySelectorAll("#era-chips .chip").forEach((chip) => {
+      chip.classList.toggle("selected", chip.textContent.trim() === vibe.era);
+    });
+  };
+
+  document.getElementById("vibe-chips").addEventListener("click", (event) => {
+    const chip = event.target.closest(".chip");
+    if (!chip) return;
+    document.querySelectorAll("#vibe-chips .chip").forEach((el) => el.classList.remove("selected"));
+    chip.classList.add("selected");
+    applyVibe(vibePresets[Number(chip.dataset.vibe)]);
+  });
 
   const toggleMulti = (containerId) => {
     document.getElementById(containerId).addEventListener("click", (event) => {
@@ -855,6 +996,7 @@ async function renderCreateScreen() {
     const runtime = document.querySelector("#runtime-chips .chip.selected");
 
     const values = {
+      mode: document.querySelector(".mode-option.selected")?.dataset.mode || "classic",
       providers: selected("provider-chips"),
       genres: selected("genre-chips"),
       languages: selected("language-chips"),
@@ -863,9 +1005,12 @@ async function renderCreateScreen() {
       runtimeRange: [Number(runtime?.dataset.min || 0), Number(runtime?.dataset.max || 400)],
     };
 
+    const submit = document.getElementById("create-submit");
+    submit.disabled = true;
     try {
       await createGame(values);
     } catch {
+      submit.disabled = false;
       toast("Something went wrong creating the game.");
     }
   });
@@ -877,6 +1022,11 @@ async function renderCreateScreen() {
       chipContainer.innerHTML = genresCache
         .map((g) => `<button type="button" class="chip" data-value="${g.id}">${esc(g.name)}</button>`)
         .join("");
+      if (pendingVibeGenres?.length) {
+        chipContainer.querySelectorAll(".chip").forEach((chip) => {
+          chip.classList.toggle("selected", pendingVibeGenres.includes(Number(chip.dataset.value)));
+        });
+      }
     }
   } catch {
     const chipContainer = document.getElementById("genre-chips");
@@ -1145,7 +1295,103 @@ function bindResultCards(root) {
   });
 }
 
+const shownMatchBanners = new Set();
+
+async function showMatchBanner(movieId) {
+  if (shownMatchBanners.has(movieId)) return;
+  shownMatchBanners.add(movieId);
+  updateMatchesPill();
+
+  let banner = document.getElementById("match-banner");
+  if (!banner) {
+    banner = document.createElement("button");
+    banner.id = "match-banner";
+    banner.className = "match-banner";
+    document.body.appendChild(banner);
+  }
+
+  const movie = await fetchMovieSummary(movieId);
+  const title = movie?.title || "a movie";
+  banner.innerHTML = `
+    ${movie?.poster_path ? `<img src="${posterUrl(movie.poster_path, "w92")}" alt="">` : ""}
+    <span><strong>It's a match! 🎉</strong><br>Everyone liked ${esc(title)}</span>`;
+  banner.hidden = false;
+  banner.onclick = () => {
+    banner.hidden = true;
+    openMovieModal(movieId);
+  };
+  clearTimeout(showMatchBanner.timer);
+  showMatchBanner.timer = setTimeout(() => { banner.hidden = true; }, 6000);
+}
+
+function updateMatchesPill() {
+  const pill = document.getElementById("matches-pill");
+  if (pill && state.game) pill.textContent = `♥ ${matchedIdsOf(state.game).length} matches`;
+}
+
+async function showMatchesModal() {
+  const ids = matchedIdsOf(state.game);
+  let overlay = document.getElementById("movie-modal");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = "movie-modal";
+    overlay.className = "modal-overlay";
+    document.body.appendChild(overlay);
+  }
+  overlay.hidden = false;
+
+  const close = () => { overlay.hidden = true; overlay.innerHTML = ""; };
+  overlay.addEventListener("pointerup", (event) => {
+    if (event.target === overlay) close();
+  }, { once: true });
+
+  if (ids.length === 0) {
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-header"><button class="link" id="modal-close">Close</button></div>
+        <h3>No matches yet</h3>
+        <p class="muted">Keep swiping — you'll both get an alert the moment you like the same movie.</p>
+      </div>`;
+    overlay.querySelector("#modal-close").addEventListener("click", close);
+    return;
+  }
+
+  overlay.innerHTML = `
+    <div class="modal-sheet">
+      <div class="modal-header">
+        <h3 style="margin:0">Your matches (${ids.length})</h3>
+        <button class="link" id="modal-close">Close</button>
+      </div>
+      <div class="results-grid" id="matches-grid"><p class="muted">Loading…</p></div>
+    </div>`;
+  overlay.querySelector("#modal-close").addEventListener("click", close);
+
+  const cards = await Promise.all(ids.slice(0, 60).map(async (id) => {
+    const movie = await fetchMovieSummary(id);
+    if (!movie) return "";
+    const poster = posterUrl(movie.poster_path, "w342");
+    return `
+      <button type="button" class="result-card" data-id="${id}">
+        ${poster ? `<img src="${poster}" alt="${esc(movie.title)}">` : `<div class="poster-missing">${esc(movie.title)}</div>`}
+        <div class="result-info"><strong>${esc(movie.title)}</strong></div>
+      </button>`;
+  }));
+
+  const grid = overlay.querySelector("#matches-grid");
+  if (grid) {
+    grid.innerHTML = cards.join("");
+    grid.querySelectorAll(".result-card[data-id]").forEach((card) => {
+      card.addEventListener("click", () => {
+        close();
+        openMovieModal(Number(card.dataset.id));
+      });
+    });
+  }
+}
+
 function renderMatchScreen() {
+  if (isEndless()) return renderEndlessMatchScreen();
+
   if (state.finishedSent && unswipedMovies().length === 0) {
     app.innerHTML = `
       ${topBarHtml("")}
@@ -1203,6 +1449,65 @@ function renderMatchScreen() {
   buildDeckDom();
   attachDeckGestures(document.getElementById("deck"));
 
+  document.getElementById("nope-button").addEventListener("click", () => swipeTopCard(false));
+  document.getElementById("like-button").addEventListener("click", () => swipeTopCard(true));
+}
+
+function renderEndlessMatchScreen() {
+  if (state.movies.length === 0 && !state.fetchingMovies && !state.noMoreMovies) {
+    fetchMovies();
+  }
+
+  if (state.noMoreMovies && unswipedMovies().length === 0) {
+    app.innerHTML = `
+      ${topBarHtml(`<span class="code-pill">${esc(state.game.entry_code)}</span>`)}
+      <div class="screen center">
+        <h1 class="headline-sm">You've swiped everything we could find</h1>
+        <p class="muted">Check your matches, or start a new game with different filters for a fresh well.</p>
+        <button class="btn btn-primary" id="view-matches">♥ View matches</button>
+        <button class="btn btn-ghost" id="back-home">Home</button>
+      </div>`;
+    bindBrandHome();
+    document.getElementById("view-matches").addEventListener("click", showMatchesModal);
+    document.getElementById("back-home").addEventListener("click", leaveGame);
+    return;
+  }
+
+  if (unswipedMovies().length === 0) {
+    app.innerHTML = `
+      ${topBarHtml(`<span class="code-pill">${esc(state.game.entry_code)}</span>`)}
+      <div class="screen center">
+        <div class="spinner"></div>
+        <p class="muted">Finding movies…</p>
+      </div>`;
+    bindBrandHome();
+    return;
+  }
+
+  app.innerHTML = `
+    ${topBarHtml(`<span class="code-pill">${esc(state.game.entry_code)}</span>`)}
+    <div class="screen match-layout">
+      <div class="deck-meta">
+        <button type="button" class="meta-pill" id="matches-pill">♥ ${matchedIdsOf(state.game).length} matches</button>
+        <span class="endless-tag">Endless</span>
+        <button type="button" class="meta-pill" id="invite-pill">+ Invite</button>
+      </div>
+      <div class="deck" id="deck"></div>
+      <div class="swipe-actions">
+        <button class="action-btn nope" id="nope-button" aria-label="Nope">✕</button>
+        <button class="action-btn like" id="like-button" aria-label="Like">♥</button>
+      </div>
+    </div>`;
+
+  bindBrandHome();
+  buildDeckDom();
+  attachDeckGestures(document.getElementById("deck"));
+
+  document.getElementById("matches-pill").addEventListener("click", showMatchesModal);
+  document.getElementById("invite-pill").addEventListener("click", async () => {
+    await navigator.clipboard.writeText(shareLink());
+    toast("Invite link copied — anyone can join and swipe on their own time!");
+  });
   document.getElementById("nope-button").addEventListener("click", () => swipeTopCard(false));
   document.getElementById("like-button").addEventListener("click", () => swipeTopCard(true));
 }
@@ -1353,7 +1658,7 @@ function attachDeckGestures(deck) {
 }
 
 function flyOut(card, liked, movie) {
-  const lastCard = unswipedMovies().length <= 1;
+  const lastCard = !isEndless() && unswipedMovies().length <= 1;
   const exitX = (liked ? 1 : -1) * Math.max(window.innerWidth, 480);
   card.classList.add("flying");
   card.style.transform = `translate(${exitX}px, -30px) rotate(${liked ? 30 : -30}deg)`;

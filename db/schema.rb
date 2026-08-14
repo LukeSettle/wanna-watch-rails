@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_08_14_034000) do
+ActiveRecord::Schema[7.1].define(version: 2026_08_14_180000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "plpgsql"
 
@@ -26,6 +26,7 @@ ActiveRecord::Schema[7.1].define(version: 2026_08_14_034000) do
     t.jsonb "deck", default: []
     t.integer "deck_round", default: -1
     t.integer "dealt_movie_ids", default: [], array: true
+    t.string "mode", default: "classic", null: false
     t.index ["user_id"], name: "index_games_on_user_id"
   end
 

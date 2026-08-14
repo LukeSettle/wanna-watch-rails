@@ -83,8 +83,14 @@ const backend = {
   previousGames(userId) {
     return backendRequest(`/games/previous?user_id=${userId}`);
   },
-  gameDeck(gameId) {
-    return backendRequest(`/games/${gameId}/deck`);
+  gameDeck(gameId, userId) {
+    return backendRequest(`/games/${gameId}/deck?user_id=${userId}`);
+  },
+  swipe(gameId, userId, movieId, liked) {
+    return backendRequest(`/games/${gameId}/swipe`, {
+      method: "POST",
+      body: { user_id: userId, movie_id: movieId, liked },
+    });
   },
 };
 

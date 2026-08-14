@@ -334,7 +334,8 @@ function recordSwipe(movie, liked) {
     sendFinished();
     render();
   } else {
-    updateDeckDom();
+    updateDeckCounter();
+    revealNextCard();
   }
 }
 
@@ -352,6 +353,7 @@ function screenName() {
 
 function render() {
   const screen = screenName();
+  document.body.classList.toggle("lock-scroll", screen === "match");
   const key = renderKeyFor(screen);
   if (key === lastRenderKey) {
     if (screen === "lobby" || screen === "waiting") updateDynamicLists(screen);
@@ -784,7 +786,8 @@ function renderMatchScreen() {
     </div>`;
 
   bindBrandHome();
-  updateDeckDom();
+  buildDeckDom();
+  attachDeckGestures(document.getElementById("deck"));
 
   document.getElementById("nope-button").addEventListener("click", () => swipeTopCard(false));
   document.getElementById("like-button").addEventListener("click", () => swipeTopCard(true));
@@ -817,98 +820,136 @@ function movieCardHtml(movie) {
     </div>`;
 }
 
-function updateDeckDom() {
+function buildDeckDom() {
   const deck = document.getElementById("deck");
   if (!deck) return;
-
-  const queue = unswipedMovies();
-  const counter = document.getElementById("deck-counter");
-  if (counter) counter.textContent = `${queue.length} movie${queue.length === 1 ? "" : "s"} left`;
-
-  deck.innerHTML = queue.slice(0, 3).map(movieCardHtml).reverse().join("");
-
-  const cards = deck.querySelectorAll(".movie-card");
-  const topCard = cards[cards.length - 1];
-  if (topCard) {
-    const movie = queue[0];
-    attachSwipeHandlers(topCard, movie);
-  }
+  deck.innerHTML = unswipedMovies().slice(0, 3).map(movieCardHtml).reverse().join("");
+  updateDeckCounter();
 }
 
-function attachSwipeHandlers(card, movie) {
+function updateDeckCounter() {
+  const counter = document.getElementById("deck-counter");
+  if (!counter) return;
+  const count = unswipedMovies().length;
+  counter.textContent = `${count} movie${count === 1 ? "" : "s"} left`;
+}
+
+function topCardEl(deck) {
+  const cards = deck.querySelectorAll(".movie-card:not(.flying)");
+  return cards[cards.length - 1] || null;
+}
+
+function movieForCard(card) {
+  return state.movies.find((m) => m.id === Number(card.dataset.id));
+}
+
+// Adds the next queued card underneath the visible stack, so swipes never
+// rebuild the deck DOM mid-animation.
+function revealNextCard() {
+  const deck = document.getElementById("deck");
+  if (!deck) return;
+  const visibleIds = new Set(
+    [...deck.querySelectorAll(".movie-card:not(.flying)")].map((c) => Number(c.dataset.id))
+  );
+  const next = unswipedMovies().slice(0, 3).find((m) => !visibleIds.has(m.id));
+  if (next) deck.insertAdjacentHTML("afterbegin", movieCardHtml(next));
+}
+
+function swipeThreshold() {
+  return Math.min(120, window.innerWidth * 0.28);
+}
+
+// Pointer-drag gestures on the whole deck area (not just the card), so a
+// swipe started anywhere on the play area moves the top card. The deck has
+// touch-action: none, so the browser never turns the gesture into a scroll.
+function attachDeckGestures(deck) {
+  let card = null;
+  let movie = null;
+  let stamps = null;
   let startX = 0;
   let startY = 0;
   let deltaX = 0;
   let dragging = false;
   let moved = false;
+  let samples = [];
 
-  const threshold = Math.min(130, window.innerWidth * 0.3);
-
-  const setTransform = () => {
-    const rotation = (deltaX / window.innerWidth) * 20;
-    card.style.transform = `translateX(${deltaX}px) rotate(${rotation}deg)`;
-    const likeStamp = card.querySelector(".stamp-like");
-    const nopeStamp = card.querySelector(".stamp-nope");
-    likeStamp.style.opacity = deltaX > 0 ? Math.min(1, deltaX / threshold) : 0;
-    nopeStamp.style.opacity = deltaX < 0 ? Math.min(1, -deltaX / threshold) : 0;
-  };
-
-  card.addEventListener("pointerdown", (event) => {
+  deck.addEventListener("pointerdown", (event) => {
+    card = topCardEl(deck);
+    if (!card) return;
+    movie = movieForCard(card);
+    stamps = {
+      like: card.querySelector(".stamp-like"),
+      nope: card.querySelector(".stamp-nope"),
+    };
     dragging = true;
     moved = false;
     startX = event.clientX;
     startY = event.clientY;
     deltaX = 0;
-    card.setPointerCapture(event.pointerId);
+    samples = [{ x: event.clientX, t: event.timeStamp }];
+    deck.setPointerCapture(event.pointerId);
     card.classList.add("dragging");
   });
 
-  card.addEventListener("pointermove", (event) => {
-    if (!dragging) return;
+  deck.addEventListener("pointermove", (event) => {
+    if (!dragging || !card) return;
     deltaX = event.clientX - startX;
-    if (Math.abs(deltaX) > 8 || Math.abs(event.clientY - startY) > 8) moved = true;
-    setTransform();
+    const deltaY = event.clientY - startY;
+    samples.push({ x: event.clientX, t: event.timeStamp });
+    if (samples.length > 6) samples.shift();
+    if (Math.abs(deltaX) > 6 || Math.abs(deltaY) > 6) moved = true;
+
+    const rotation = (deltaX / window.innerWidth) * 18;
+    card.style.transform = `translate(${deltaX}px, ${deltaY * 0.15}px) rotate(${rotation}deg)`;
+    stamps.like.style.opacity = deltaX > 0 ? Math.min(1, deltaX / swipeThreshold()) : 0;
+    stamps.nope.style.opacity = deltaX < 0 ? Math.min(1, -deltaX / swipeThreshold()) : 0;
   });
 
-  const endDrag = () => {
-    if (!dragging) return;
+  const release = (event) => {
+    if (!dragging || !card) return;
     dragging = false;
     card.classList.remove("dragging");
 
-    if (Math.abs(deltaX) > threshold) {
+    // px/ms over the last few pointer samples; a quick flick counts even if
+    // the card didn't travel the full threshold distance.
+    const first = samples[0];
+    const last = samples[samples.length - 1];
+    const velocity = last.t > first.t ? (last.x - first.x) / (last.t - first.t) : 0;
+    const flicked = Math.abs(velocity) > 0.6 && Math.abs(deltaX) > 30 &&
+      Math.sign(velocity) === Math.sign(deltaX);
+
+    if (Math.abs(deltaX) > swipeThreshold() || flicked) {
       flyOut(card, deltaX > 0, movie);
     } else {
       card.style.transform = "";
-      card.querySelector(".stamp-like").style.opacity = 0;
-      card.querySelector(".stamp-nope").style.opacity = 0;
-      if (!moved) card.classList.toggle("flipped");
+      stamps.like.style.opacity = 0;
+      stamps.nope.style.opacity = 0;
+      if (!moved && event.type === "pointerup") card.classList.toggle("flipped");
     }
+    card = null;
+    movie = null;
     deltaX = 0;
   };
 
-  card.addEventListener("pointerup", endDrag);
-  card.addEventListener("pointercancel", endDrag);
+  deck.addEventListener("pointerup", release);
+  deck.addEventListener("pointercancel", release);
 }
 
 function flyOut(card, liked, movie) {
-  const exitX = liked ? window.innerWidth : -window.innerWidth;
+  const exitX = (liked ? 1 : -1) * Math.max(window.innerWidth, 480);
   card.classList.add("flying");
-  card.style.transform = `translateX(${exitX * 1.2}px) rotate(${liked ? 30 : -30}deg)`;
+  card.style.transform = `translate(${exitX}px, -30px) rotate(${liked ? 30 : -30}deg)`;
   card.querySelector(liked ? ".stamp-like" : ".stamp-nope").style.opacity = 1;
-  setTimeout(() => recordSwipe(movie, liked), 250);
+  setTimeout(() => card.remove(), 350);
+  recordSwipe(movie, liked);
 }
 
 function swipeTopCard(liked) {
-  const queue = unswipedMovies();
-  if (queue.length === 0) return;
   const deck = document.getElementById("deck");
-  const cards = deck.querySelectorAll(".movie-card");
-  const topCard = cards[cards.length - 1];
-  if (topCard) {
-    flyOut(topCard, liked, queue[0]);
-  } else {
-    recordSwipe(queue[0], liked);
-  }
+  if (!deck) return;
+  const card = topCardEl(deck);
+  if (!card) return;
+  flyOut(card, liked, movieForCard(card));
 }
 
 document.addEventListener("keydown", (event) => {

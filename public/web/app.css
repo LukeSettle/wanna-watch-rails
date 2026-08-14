@@ -19,6 +19,22 @@ html, body {
   margin: 0;
   padding: 0;
   min-height: 100%;
+  overscroll-behavior: none;
+}
+
+/* While swiping, the page itself must never scroll, bounce, or pull-to-refresh. */
+body.lock-scroll {
+  overflow: hidden;
+  height: 100dvh;
+}
+
+body.lock-scroll #app {
+  height: 100dvh;
+  overflow: hidden;
+}
+
+button, .chip, .game-row, .tab {
+  touch-action: manipulation;
 }
 
 body {
@@ -283,7 +299,11 @@ select option { color: var(--ink); }
 
 /* ---------- match / deck ---------- */
 
-.match-layout { gap: 10px; }
+.match-layout {
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
 
 .deck-meta {
   display: flex;
@@ -295,7 +315,12 @@ select option { color: var(--ink); }
 .deck {
   position: relative;
   flex: 1;
-  min-height: 420px;
+  min-height: 300px;
+  touch-action: none;
+}
+
+/* Allow scrolling the description when the top card is flipped. */
+.deck:has(.movie-card.flipped:not(.flying)) {
   touch-action: pan-y;
 }
 
@@ -312,12 +337,15 @@ select option { color: var(--ink); }
   display: flex;
   flex-direction: column;
   user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
   cursor: grab;
   transition: transform 0.25s ease;
+  will-change: transform;
 }
 
 .movie-card.dragging { transition: none; cursor: grabbing; }
-.movie-card.flying { transition: transform 0.25s ease-in; pointer-events: none; }
+.movie-card.flying { transition: transform 0.35s ease-in; pointer-events: none; }
 
 .movie-card:nth-last-child(2) { transform: scale(0.96) translateY(10px); }
 .movie-card:nth-last-child(3) { transform: scale(0.92) translateY(20px); }
@@ -327,6 +355,7 @@ select option { color: var(--ink); }
   flex: 1;
   object-fit: cover;
   pointer-events: none;
+  -webkit-user-drag: none;
 }
 
 .poster-missing {

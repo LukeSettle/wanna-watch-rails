@@ -1,32 +1,43 @@
 # Builds a curated deck of movies for one round of a game.
 #
-# Sources, blended by how much taste history the players have:
-#   1. TMDB recommendations seeded by the players' previously liked movies.
-#      Candidates recommended by several seeds (or seeds shared by several
-#      players) score higher.
-#   2. Popular movies from TMDB discover, using the game's optional filters.
+# Sourcing strategy: instead of raw TMDB popularity (franchise blockbusters,
+# unreleased hype titles, junk on deep pages), each deck mixes quality pools:
 #
-# With no history the deck is all popular movies; as players like more movies
-# the deck shifts toward recommendations. Movies already dealt in this game or
-# already liked by any player are excluded, so every round is fresh.
+#   recs      - TMDB recommendations seeded by the players' liked movies
+#   popular   - current popular titles, filtered to well-rated and widely voted
+#   gems      - highly rated but less-known movies ("hidden gems")
+#   acclaimed - widely loved catalog picks across eras
+#
+# With no like history the deck is popular + gems + acclaimed. As players like
+# movies, recommendations take a growing share. Movies any player has already
+# liked, swiped past, or been dealt in recent games are excluded, so decks
+# never repeat.
 class DeckBuilder
   DECK_SIZE = 20
-  MAX_SEEDS = 8
+  MAX_SEEDS = 6
   RECENT_GAMES_PER_PLAYER = 10
-  MIN_VOTE_COUNT = 50
+  RECENT_DEALT_GAMES = 15
 
   def initialize(game)
     @game = game
     @query_params = parse_query_params
     @excluded_ids = excluded_movie_ids
+    @rng = Random.new(game.id * 31 + game.load_more_count)
   end
 
   def build
-    recommendations = recommendation_candidates
-    personalized_count = [recommendations.size, (DECK_SIZE * 0.7).round].min
-    popular = popular_candidates(recommendations.first(personalized_count))
+    recs = recommendation_candidates
+    plan = [
+      [recs, [recs.size, personalized_target].min],
+      [popular_candidates, 6],
+      [hidden_gem_candidates, 4],
+      [acclaimed_candidates, 4],
+    ]
 
-    interleave(recommendations.first(personalized_count), popular).first(DECK_SIZE)
+    deck = interleave(plan)
+    fill(deck, plan.map(&:first))
+    fill(deck, [fallback_candidates]) if deck.size < DECK_SIZE
+    deck.first(DECK_SIZE)
   end
 
   private
@@ -37,23 +48,30 @@ class DeckBuilder
     {}
   end
 
-  # Every movie the players liked before, most-shared first, rotated per round
-  # so "keep playing" seeds from different favorites.
-  def seed_movie_ids
-    like_counts = Hash.new(0)
-    @game.players.map(&:user_id).uniq.each do |user_id|
-      recent_likes = Player.where(user_id: user_id)
-                           .order(updated_at: :desc)
-                           .limit(RECENT_GAMES_PER_PLAYER)
-                           .pluck(:liked_movie_ids)
-                           .flatten
-      recent_likes.uniq.each { |movie_id| like_counts[movie_id] += 1 }
-    end
+  # More like-history means a bigger personalized share (max half the deck).
+  def personalized_target
+    [seed_movie_ids.size * 2, DECK_SIZE / 2].min
+  end
 
-    like_counts.sort_by { |movie_id, count| [-count, -movie_id] }
-               .map(&:first)
-               .rotate(@game.load_more_count * MAX_SEEDS)
-               .first(MAX_SEEDS)
+  # Players' liked movies, most-shared first, rotated per round so
+  # "keep playing" seeds from different favorites.
+  def seed_movie_ids
+    @seed_movie_ids ||= begin
+      like_counts = Hash.new(0)
+      @game.players.map(&:user_id).uniq.each do |user_id|
+        recent_likes = Player.where(user_id: user_id)
+                             .order(updated_at: :desc)
+                             .limit(RECENT_GAMES_PER_PLAYER)
+                             .pluck(:liked_movie_ids)
+                             .flatten
+        recent_likes.uniq.each { |movie_id| like_counts[movie_id] += 1 }
+      end
+
+      like_counts.sort_by { |movie_id, count| [-count, -movie_id] }
+                 .map(&:first)
+                 .rotate(@game.load_more_count * MAX_SEEDS)
+                 .first(MAX_SEEDS)
+    end
   end
 
   def recommendation_candidates
@@ -63,6 +81,7 @@ class DeckBuilder
     seed_movie_ids.each do |seed_id|
       TmdbClient.recommendations(seed_id).each do |movie|
         next unless suitable?(movie)
+        next if movie["vote_count"].to_i < 150 || movie["vote_average"].to_f < 6.2
 
         scores[movie["id"]] += 1
         movies[movie["id"]] = movie
@@ -72,55 +91,119 @@ class DeckBuilder
     scores.sort_by { |_, score| -score }.map { |movie_id, _| movies[movie_id] }
   end
 
-  def popular_candidates(already_picked)
-    picked_ids = already_picked.map { |movie| movie["id"] }
-    first_page = (@query_params["page"].to_i + @game.load_more_count) % 5 + 1
-
-    candidates = []
-    [first_page, first_page + 5].each do |page|
-      break if candidates.size >= DECK_SIZE
-
-      candidates += TmdbClient.discover(@query_params.merge("page" => page, "sort_by" => "popularity.desc"))
-                              .select { |movie| suitable?(movie) && !picked_ids.include?(movie["id"]) }
-    end
-    candidates.uniq { |movie| movie["id"] }
+  def popular_candidates
+    @popular_candidates ||= discover_pool(
+      "sort_by" => "popularity.desc",
+      "vote_count.gte" => 400,
+      "vote_average.gte" => 6.3,
+      "page" => page_for(:popular, 3)
+    )
   end
 
-  # Recommendations feel personal; popular picks keep variety. Deal 2:1.
-  def interleave(recommendations, popular)
-    deck = []
-    recommendations = recommendations.dup
-    popular = popular.dup
+  def hidden_gem_candidates
+    @hidden_gem_candidates ||= discover_pool(
+      "sort_by" => "popularity.desc",
+      "vote_average.gte" => 7.1,
+      "vote_count.gte" => 150,
+      "vote_count.lte" => 2500,
+      "page" => page_for(:gems, 6)
+    )
+  end
 
-    while deck.size < DECK_SIZE && (recommendations.any? || popular.any?)
-      2.times { deck << recommendations.shift if recommendations.any? }
-      deck << popular.shift if popular.any?
+  def acclaimed_candidates
+    @acclaimed_candidates ||= discover_pool(
+      "sort_by" => "vote_average.desc",
+      "vote_count.gte" => 3000,
+      "page" => page_for(:acclaimed, 8)
+    )
+  end
+
+  def fallback_candidates
+    discover_pool(
+      "sort_by" => "popularity.desc",
+      "vote_count.gte" => 100,
+      "page" => page_for(:fallback, 2)
+    )
+  end
+
+  def discover_pool(overrides)
+    TmdbClient.discover(base_discover_params.merge(overrides))
+              .select { |movie| suitable?(movie) }
+  end
+
+  def base_discover_params
+    today = Date.current.iso8601
+    params = {
+      "include_adult" => false,
+      "primary_release_date.lte" => [@query_params["primary_release_date.lte"], today].compact.min,
+      "primary_release_date.gte" => @query_params["primary_release_date.gte"],
+      "with_genres" => @query_params["with_genres"],
+      "with_watch_providers" => @query_params["with_watch_providers"],
+      "watch_region" => @query_params["watch_region"],
+      "with_original_language" => @query_params["with_original_language"],
+      "with_runtime.gte" => @query_params["with_runtime.gte"],
+      "with_runtime.lte" => @query_params["with_runtime.lte"],
+    }
+    # A chosen language should override the default US-origin bias.
+    if @query_params["with_original_language"].blank?
+      params["with_origin_country"] = @query_params["with_origin_country"]
     end
-    deck.uniq { |movie| movie["id"] }
+    params.compact
+  end
+
+  # Different page per pool, stable within a round, varies per game and round.
+  def page_for(pool, max_page)
+    @pages ||= {}
+    @pages[pool] ||= 1 + @rng.rand(max_page)
+  end
+
+  # Deal one card from each pool in turn (up to its budget) so the deck feels
+  # like a mix rather than blocks of similar movies.
+  def interleave(plan)
+    deck = []
+    queues = plan.map { |movies, budget| { movies: movies.dup, budget: budget } }
+
+    while deck.size < DECK_SIZE && queues.any? { |q| q[:budget].positive? && q[:movies].any? }
+      queues.each do |q|
+        break if deck.size >= DECK_SIZE
+        next if q[:budget] <= 0 || q[:movies].empty?
+
+        movie = q[:movies].shift
+        next if deck.any? { |m| m["id"] == movie["id"] }
+
+        deck << movie
+        q[:budget] -= 1
+      end
+    end
+    deck
+  end
+
+  def fill(deck, pools)
+    pools.each do |movies|
+      movies.each do |movie|
+        break if deck.size >= DECK_SIZE
+
+        deck << movie unless deck.any? { |m| m["id"] == movie["id"] }
+      end
+    end
   end
 
   def suitable?(movie)
     return false if movie["poster_path"].blank? || movie["adult"]
     return false if @excluded_ids.include?(movie["id"])
-    return false if movie["vote_count"].to_i < MIN_VOTE_COUNT
+    return false if movie["release_date"].blank? || movie["release_date"] > Date.current.iso8601
 
     matches_filters?(movie)
   end
 
-  # Optional game filters (genres / rating / years) also apply to
-  # recommendation candidates so custom games stay on theme.
+  # Optional game filters also apply to recommendation candidates so custom
+  # games stay on theme.
   def matches_filters?(movie)
     genres = @query_params["with_genres"].to_s.split("|").map(&:to_i)
     return false if genres.any? && (movie["genre_ids"].to_a & genres).empty?
 
     min_rating = @query_params["vote_average.gte"].to_f
     return false if movie["vote_average"].to_f < min_rating
-
-    min_runtime = @query_params["with_runtime.gte"].to_i
-    max_runtime = @query_params["with_runtime.lte"].to_i
-    runtime = movie["runtime"].to_i
-    return false if min_runtime.positive? && runtime.positive? && runtime < min_runtime
-    return false if max_runtime.positive? && max_runtime < 400 && runtime.positive? && runtime > max_runtime
 
     year = movie["release_date"].to_s.slice(0, 4).to_i
     year_from = @query_params["primary_release_date.gte"].to_s.slice(0, 4).to_i
@@ -131,8 +214,20 @@ class DeckBuilder
     true
   end
 
+  # Anything the players have liked or swiped before, plus anything dealt in
+  # their recent games (covers abandoned rounds), never comes back.
   def excluded_movie_ids
-    previously_liked = Player.where(user_id: @game.players.map(&:user_id)).pluck(:liked_movie_ids).flatten
-    (@game.dealt_movie_ids.to_a + previously_liked).uniq
+    user_ids = @game.players.map(&:user_id).uniq
+    swiped = Player.where(user_id: user_ids)
+                   .pluck(:liked_movie_ids, :seen_movie_ids)
+                   .flatten
+                   .compact
+    recently_dealt = Game.where(id: Player.where(user_id: user_ids).select(:game_id))
+                         .order(created_at: :desc)
+                         .limit(RECENT_DEALT_GAMES)
+                         .pluck(:dealt_movie_ids)
+                         .flatten
+
+    (@game.dealt_movie_ids.to_a + swiped + recently_dealt).to_set
   end
 end

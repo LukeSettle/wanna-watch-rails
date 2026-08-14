@@ -71,10 +71,10 @@ const backend = {
   ready(gameId, userId) {
     return backendRequest(`/games/${gameId}/ready`, { method: "POST", body: { user_id: userId } });
   },
-  finishMatching(gameId, userId, likedMovieIds) {
+  finishMatching(gameId, userId, likedMovieIds, seenMovieIds) {
     return backendRequest(`/games/${gameId}/finish_matching`, {
       method: "POST",
-      body: { user_id: userId, liked_movie_ids: likedMovieIds },
+      body: { user_id: userId, liked_movie_ids: likedMovieIds, seen_movie_ids: seenMovieIds },
     });
   },
   keepPlaying(params) {

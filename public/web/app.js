@@ -312,7 +312,8 @@ async function sendFinished() {
   if (state.finishedSent) return;
   state.finishedSent = true;
   try {
-    applyGameUpdate(await backend.finishMatching(state.game.id, state.user.id, likedMovieIds()));
+    const seenIds = loadJSON(swipedIdsKey(), []);
+    applyGameUpdate(await backend.finishMatching(state.game.id, state.user.id, likedMovieIds(), seenIds));
     render();
   } catch {
     state.finishedSent = false;
@@ -1339,7 +1340,7 @@ function attachDeckGestures(deck) {
       stamps.nope.style.opacity = 0;
       if (!moved && event.type === "pointerup") {
         const hit = document.elementFromPoint(event.clientX, event.clientY) || event.target;
-        toggleCardFlip(card, movie, hit);
+        toggleCardFlip(card, movie, hit.nodeType === 1 ? hit : hit.parentElement);
       }
     }
     card = null;

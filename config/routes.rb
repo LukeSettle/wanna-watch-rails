@@ -13,5 +13,6 @@ Rails.application.routes.draw do
   get 'games/find_by_entry_code'
   post 'games/keep_playing'
 
-  root to: 'application#home'
+  get 'home', to: 'application#home'
+  root to: 'web#show'
 end

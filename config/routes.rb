@@ -7,6 +7,9 @@ Rails.application.routes.draw do
   resources :games, only: [:index] do
     member do
       post :finish
+      post :join
+      post :ready
+      post :finish_matching
     end
   end
   post 'games/upsert'

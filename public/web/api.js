@@ -45,6 +45,18 @@ const backend = {
   findGameByEntryCode(entryCode) {
     return backendRequest(`/games/find_by_entry_code?entry_code=${encodeURIComponent(entryCode)}`);
   },
+  joinGame(gameId, userId) {
+    return backendRequest(`/games/${gameId}/join`, { method: "POST", body: { user_id: userId } });
+  },
+  ready(gameId, userId) {
+    return backendRequest(`/games/${gameId}/ready`, { method: "POST", body: { user_id: userId } });
+  },
+  finishMatching(gameId, userId, likedMovieIds) {
+    return backendRequest(`/games/${gameId}/finish_matching`, {
+      method: "POST",
+      body: { user_id: userId, liked_movie_ids: likedMovieIds },
+    });
+  },
   keepPlaying(params) {
     return backendRequest("/games/keep_playing", { method: "POST", body: params });
   },

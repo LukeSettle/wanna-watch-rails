@@ -152,10 +152,31 @@ function applyGameUpdate(game) {
     state.finishedSent = false;
     fetchMovies();
   }
-  if (!currentPlayer()?.finished_at) {
-    state.finishedSent = false;
-  }
 }
+
+// Safety net: if the websocket is down, or we're on a screen that depends on
+// other players, refresh the game state by polling.
+let pollInFlight = false;
+setInterval(async () => {
+  if (!state.game || pollInFlight) return;
+
+  const screen = screenName();
+  const socketOpen = cable?.isOpen();
+  if (socketOpen && !["lobby", "waiting", "results"].includes(screen)) return;
+
+  pollInFlight = true;
+  try {
+    const game = await backend.findGameByEntryCode(state.game.entry_code);
+    if (state.game && game.id === state.game.id) {
+      applyGameUpdate(game);
+      render();
+    }
+  } catch {
+    // offline or transient error; try again on the next tick
+  } finally {
+    pollInFlight = false;
+  }
+}, 4000);
 
 // ---------- game lifecycle ----------
 
@@ -170,7 +191,7 @@ async function joinGameByCode(code) {
   }
 }
 
-function startGame(game) {
+async function startGame(game) {
   state.game = game;
   state.movies = [];
   state.serverMessages = [];
@@ -178,6 +199,13 @@ function startGame(game) {
   state.finishedSent = false;
   connectCable();
   cable.subscribe(gameChannelParams());
+  render();
+
+  try {
+    applyGameUpdate(await backend.joinGame(game.id, state.user.id));
+  } catch {
+    toast("Could not join the game. Check your connection.");
+  }
   render();
   if (currentPlayer()?.ready_at) fetchMovies();
 }
@@ -203,18 +231,31 @@ async function createGame(values) {
   startGame(game);
 }
 
-function sendReady() {
-  cable.perform(gameChannelParams(), "ready");
+async function sendReady() {
+  try {
+    applyGameUpdate(await backend.ready(state.game.id, state.user.id));
+    render();
+    fetchMovies();
+  } catch {
+    toast("Could not start. Try again.");
+  }
 }
 
 function likedMovieIds() {
   return loadJSON(likedIdsKey(), []);
 }
 
-function sendFinished() {
+async function sendFinished() {
   if (state.finishedSent) return;
   state.finishedSent = true;
-  cable.perform(gameChannelParams(), "finish_matching", { liked_movie_ids: likedMovieIds() });
+  try {
+    applyGameUpdate(await backend.finishMatching(state.game.id, state.user.id, likedMovieIds()));
+    render();
+  } catch {
+    state.finishedSent = false;
+    toast("Couldn't send your picks — retrying…");
+    setTimeout(sendFinished, 3000);
+  }
 }
 
 async function keepPlaying() {
@@ -655,7 +696,6 @@ function renderLobbyScreen() {
       if (!goSolo) return;
     }
     sendReady();
-    fetchMovies();
   });
 
   document.getElementById("leave-game").addEventListener("click", leaveGame);

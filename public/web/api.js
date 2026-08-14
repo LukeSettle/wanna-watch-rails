@@ -22,14 +22,34 @@ async function backendRequest(path, { method = "GET", body } = {}) {
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!response.ok) {
-    const error = new Error(`Request failed: ${method} ${path} (${response.status})`);
+    const data = await response.json().catch(() => null);
+    const error = new Error(data?.error || `Request failed: ${method} ${path} (${response.status})`);
     error.status = response.status;
+    error.serverMessage = data?.error;
     throw error;
   }
   return response.json();
 }
 
 const backend = {
+  me() {
+    return backendRequest("/auth/me");
+  },
+  register(params) {
+    return backendRequest("/auth/register", { method: "POST", body: params });
+  },
+  login(email, password) {
+    return backendRequest("/auth/login", { method: "POST", body: { email, password } });
+  },
+  logout() {
+    return backendRequest("/auth/logout", { method: "POST" });
+  },
+  forgotPassword(email) {
+    return backendRequest("/auth/forgot", { method: "POST", body: { email } });
+  },
+  resetPassword(token, password) {
+    return backendRequest("/auth/reset", { method: "POST", body: { token, password } });
+  },
   upsertUser(user) {
     return backendRequest("/users/upsert", { method: "POST", body: user });
   },

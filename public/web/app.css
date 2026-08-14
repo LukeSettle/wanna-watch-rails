@@ -558,6 +558,21 @@ select option { color: var(--ink); }
 
 .hero { margin-top: 8px; }
 
+.account-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.account-card .btn { flex-shrink: 0; }
+.account-card p { margin: 4px 0 0; }
+
+.inline-link {
+  padding: 0;
+  font-size: inherit;
+}
+
 @media (min-width: 700px) {
   #app { max-width: 560px; }
   .deck { min-height: 480px; }

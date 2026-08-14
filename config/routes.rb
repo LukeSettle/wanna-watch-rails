@@ -1,4 +1,11 @@
 Rails.application.routes.draw do
+  get 'auth/me'
+  post 'auth/register'
+  post 'auth/login'
+  post 'auth/logout'
+  post 'auth/forgot'
+  post 'auth/reset'
+
   post 'users/upsert'
   get 'users/find_by_device_id'
   get 'friends/index'

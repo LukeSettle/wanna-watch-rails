@@ -73,10 +73,25 @@ async function boot() {
   }
   state.deviceId = deviceId;
 
+  const resetToken = new URLSearchParams(location.search).get("reset_token");
+  if (resetToken) {
+    history.replaceState({}, "", "/");
+    state.resetToken = resetToken;
+    state.view = "reset";
+    render();
+    return;
+  }
+
+  // A login session wins over the device-based guest identity.
   try {
-    state.user = await backend.findUserByDeviceId(deviceId);
+    state.user = await backend.me();
+    adoptUser(state.user);
   } catch {
-    state.user = null;
+    try {
+      state.user = await backend.findUserByDeviceId(deviceId);
+    } catch {
+      state.user = null;
+    }
   }
 
   if (state.user?.username) {
@@ -85,6 +100,25 @@ async function boot() {
     state.view = "name";
     render();
   }
+}
+
+// Keeps the guest fallback pointing at the logged-in account.
+function adoptUser(user) {
+  state.user = user;
+  if (user.device_id) {
+    state.deviceId = user.device_id;
+    localStorage.setItem(storageKey("device_id"), user.device_id);
+  }
+}
+
+async function logout() {
+  try {
+    await backend.logout();
+  } catch {
+    // clearing local state is what matters
+  }
+  localStorage.removeItem(storageKey("device_id"));
+  location.href = "/";
 }
 
 function pendingEntryCode() {
@@ -363,6 +397,9 @@ function render() {
 
   const renderers = {
     name: renderNameScreen,
+    login: renderLoginScreen,
+    register: renderRegisterScreen,
+    reset: renderResetScreen,
     home: renderHomeScreen,
     create: renderCreateScreen,
     history: renderHistoryScreen,
@@ -423,6 +460,7 @@ function renderNameScreen() {
         <input id="username" name="username" maxlength="30" placeholder="Enter your name" required autocomplete="nickname">
         <button type="submit" class="btn btn-primary">Let's go</button>
       </form>
+      <button class="link" id="go-login">Already have an account? Log in</button>
     </div>`;
 
   document.getElementById("name-form").addEventListener("submit", async (event) => {
@@ -434,6 +472,127 @@ function renderNameScreen() {
       await enterHome();
     } catch {
       toast("Could not save your name. Try again.");
+    }
+  });
+
+  document.getElementById("go-login").addEventListener("click", () => {
+    state.view = "login";
+    render();
+  });
+}
+
+// ---------- auth screens ----------
+
+function renderLoginScreen() {
+  app.innerHTML = `
+    <div class="screen center">
+      <img src="/logo.png" alt="WannaWatch" class="logo">
+      <h1 class="headline-sm">Welcome back</h1>
+      <form id="login-form" class="card form-card">
+        <label for="login-email">Email</label>
+        <input id="login-email" type="email" placeholder="you@example.com" required autocomplete="email">
+        <label for="login-password">Password</label>
+        <input id="login-password" type="password" placeholder="••••••••" required autocomplete="current-password">
+        <button type="submit" class="btn btn-primary">Log in</button>
+      </form>
+      <button class="link" id="forgot-password">Forgot password?</button>
+      <button class="link" id="back-to-name">Just play as a guest instead</button>
+    </div>`;
+
+  document.getElementById("login-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      adoptUser(await backend.login(
+        document.getElementById("login-email").value,
+        document.getElementById("login-password").value
+      ));
+      toast(`Welcome back, ${state.user.username}!`);
+      await enterHome();
+    } catch (error) {
+      toast(error.serverMessage || "Could not log in.");
+    }
+  });
+
+  document.getElementById("forgot-password").addEventListener("click", async () => {
+    const email = document.getElementById("login-email").value.trim() ||
+      prompt("Enter your account email:")?.trim();
+    if (!email) return;
+    try {
+      await backend.forgotPassword(email);
+      toast("Check your email for a reset link.");
+    } catch (error) {
+      toast(error.serverMessage || "Could not send the reset email.");
+    }
+  });
+
+  document.getElementById("back-to-name").addEventListener("click", () => {
+    state.view = state.user?.username ? "home" : "name";
+    render();
+  });
+}
+
+function renderRegisterScreen() {
+  app.innerHTML = `
+    ${topBarHtml("")}
+    <div class="screen center">
+      <h1 class="headline-sm">Save your account</h1>
+      <p class="muted">Keep your games and matches, and log in from any device.</p>
+      <form id="register-form" class="card form-card">
+        <label for="register-email">Email</label>
+        <input id="register-email" type="email" placeholder="you@example.com" required autocomplete="email">
+        <label for="register-password">Password <span class="muted">(8+ characters)</span></label>
+        <input id="register-password" type="password" placeholder="••••••••" required minlength="8" autocomplete="new-password">
+        <button type="submit" class="btn btn-primary">Create login</button>
+      </form>
+      <button class="link" id="back-home">Back to home</button>
+    </div>`;
+
+  bindBrandHome();
+  document.getElementById("register-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      adoptUser(await backend.register({
+        user_id: state.user?.id,
+        username: state.user?.username,
+        email: document.getElementById("register-email").value,
+        password: document.getElementById("register-password").value,
+      }));
+      toast("Account saved — you can log in anywhere now!");
+      state.view = "home";
+      lastRenderKey = null;
+      render();
+    } catch (error) {
+      toast(error.serverMessage || "Could not create the account.");
+    }
+  });
+
+  document.getElementById("back-home").addEventListener("click", () => {
+    state.view = "home";
+    render();
+  });
+}
+
+function renderResetScreen() {
+  app.innerHTML = `
+    <div class="screen center">
+      <img src="/logo.png" alt="WannaWatch" class="logo">
+      <h1 class="headline-sm">Set a new password</h1>
+      <form id="reset-form" class="card form-card">
+        <label for="reset-password">New password <span class="muted">(8+ characters)</span></label>
+        <input id="reset-password" type="password" placeholder="••••••••" required minlength="8" autocomplete="new-password">
+        <button type="submit" class="btn btn-primary">Save and log in</button>
+      </form>
+    </div>`;
+
+  document.getElementById("reset-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      adoptUser(await backend.resetPassword(state.resetToken, document.getElementById("reset-password").value));
+      state.resetToken = null;
+      toast("Password updated!");
+      await enterHome();
+    } catch (error) {
+      toast(error.serverMessage || "Could not reset the password.");
     }
   });
 }
@@ -466,6 +625,16 @@ function renderHomeScreen() {
       </section>
 
       <button class="link" id="view-history">See previous games</button>
+
+      ${state.user.email
+        ? `<p class="muted center-text">Logged in as ${esc(state.user.email)} · <button class="link inline-link" id="logout">Log out</button></p>`
+        : `<section class="card account-card">
+             <div>
+               <strong>Playing as a guest</strong>
+               <p class="muted">Create a login to keep your games and play from any device.</p>
+             </div>
+             <button class="btn btn-secondary" id="save-account">Create login</button>
+           </section>`}
     </div>`;
 
   document.getElementById("quick-play").addEventListener("click", (event) => {
@@ -495,6 +664,15 @@ function renderHomeScreen() {
   document.getElementById("view-history").addEventListener("click", () => {
     state.view = "history";
     render();
+  });
+
+  document.getElementById("save-account")?.addEventListener("click", () => {
+    state.view = "register";
+    render();
+  });
+
+  document.getElementById("logout")?.addEventListener("click", () => {
+    if (confirm("Log out on this device?")) logout();
   });
 
   renderGamesList();

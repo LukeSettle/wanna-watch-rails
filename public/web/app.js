@@ -376,6 +376,7 @@ function recordSwipe(movie, liked) {
 // ---------- rendering ----------
 
 function screenName() {
+  if (state.view === "login" || state.view === "reset") return state.view;
   if (!state.user?.username) return "name";
   if (!state.game) return state.view;
   const me = currentPlayer();

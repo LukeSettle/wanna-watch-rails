@@ -42,7 +42,12 @@ class Game < ApplicationRecord
     players.find_by(user: user).update(ready_at: DateTime.current)
   end
 
-  def player_finished(user, liked_movie_ids)
-    players.find_by(user: user).update(finished_at: DateTime.current, liked_movie_ids: liked_movie_ids)
+  def player_finished(user, liked_movie_ids, seen_movie_ids = [])
+    player = players.find_by(user: user)
+    player.update(
+      finished_at: DateTime.current,
+      liked_movie_ids: liked_movie_ids,
+      seen_movie_ids: (player.seen_movie_ids.to_a + seen_movie_ids.to_a).uniq
+    )
   end
 end

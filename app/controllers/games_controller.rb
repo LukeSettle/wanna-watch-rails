@@ -103,7 +103,7 @@ class GamesController < ApiController
     game = Game.find(params[:id])
     user = User.find(params[:user_id])
 
-    game.player_finished(user, params[:liked_movie_ids] || [])
+    game.player_finished(user, params[:liked_movie_ids] || [], params[:seen_movie_ids] || [])
     game.finish if game.reload.all_players_finished?
     broadcast_to_game(game, "#{user.username} is finished")
 

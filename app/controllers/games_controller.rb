@@ -64,18 +64,58 @@ class GamesController < ApiController
   def deck
     game = Game.find(params[:id])
 
-    game.with_lock do
-      if game.deck_round != game.load_more_count
-        deck = DeckBuilder.new(game).build
-        game.update!(
-          deck: deck,
-          deck_round: game.load_more_count,
-          dealt_movie_ids: (game.dealt_movie_ids.to_a + deck.map { |m| m["id"] }).uniq
-        )
+    if game.endless?
+      player = game.players.find_by(user_id: params[:user_id])
+      return render json: { error: "Join the game first" }, status: :unprocessable_entity unless player
+
+      render json: { movies: endless_deck_for(game, player) }, status: :ok
+    else
+      game.with_lock do
+        if game.deck_round != game.load_more_count
+          deck = DeckBuilder.new(game).build
+          game.update!(
+            deck: deck,
+            deck_round: game.load_more_count,
+            dealt_movie_ids: (game.dealt_movie_ids.to_a + deck.map { |m| m["id"] }).uniq
+          )
+        end
       end
+
+      render json: { movies: game.deck }, status: :ok
+    end
+  end
+
+  # Endless mode: record each swipe as it happens, so players can swipe on
+  # their own time and everyone gets alerted the moment a movie becomes a
+  # match (liked by every player).
+  def swipe
+    game = Game.find(params[:id])
+    player = game.players.find_by(user_id: params[:user_id])
+    return render json: { error: "Join the game first" }, status: :unprocessable_entity unless player
+
+    movie_id = params[:movie_id].to_i
+    liked = ActiveModel::Type::Boolean.new.cast(params[:liked])
+
+    player.update!(
+      seen_movie_ids: (player.seen_movie_ids.to_a + [movie_id]).uniq,
+      liked_movie_ids: liked ? (player.liked_movie_ids.to_a + [movie_id]).uniq : player.liked_movie_ids
+    )
+
+    matched = liked && game.players.count > 1 &&
+              game.players.reload.all? { |p| p.liked_movie_ids.to_a.include?(movie_id) }
+
+    if matched
+      ActionCable.server.broadcast(
+        "game_#{game.id}",
+        {
+          type: 'match',
+          movie_id: movie_id,
+          game: game.reload.to_json(include: { players: { include: :user } })
+        }
+      )
     end
 
-    render json: { movies: game.deck }, status: :ok
+    render json: { matched: matched }, status: :ok
   end
 
   def join
@@ -112,6 +152,37 @@ class GamesController < ApiController
 
   private
 
+  # One growing shared list per endless game. Each player is served whatever
+  # they haven't seen yet; when anyone runs low the list is extended with a
+  # fresh curated batch. Fully-seen movies are pruned (their ids stay in
+  # dealt_movie_ids) so the stored deck stays small.
+  def endless_deck_for(game, player)
+    movies = []
+
+    game.with_lock do
+      seen = player.reload.seen_movie_ids.to_a
+      unseen = game.deck.to_a.reject { |m| seen.include?(m["id"]) }
+
+      if unseen.size < 10
+        batch = DeckBuilder.new(game).build
+        players = game.players.reload
+        kept = game.deck.to_a.select do |m|
+          players.any? { |p| !p.seen_movie_ids.to_a.include?(m["id"]) }
+        end
+        game.update!(
+          deck: kept + batch,
+          load_more_count: game.load_more_count + 1,
+          dealt_movie_ids: (game.dealt_movie_ids.to_a + batch.map { |m| m["id"] }).uniq
+        )
+        unseen = game.deck.to_a.reject { |m| seen.include?(m["id"]) }
+      end
+
+      movies = unseen.first(20)
+    end
+
+    movies
+  end
+
   def broadcast_to_game(game, message)
     ActionCable.server.broadcast(
       "game_#{game.id}",
@@ -128,7 +199,7 @@ class GamesController < ApiController
   end
 
   def game_params
-    params.require(:game).permit(:entry_code, :query, :user_id, players_attributes: [:id, :user_id, :game_id, :_destroy])
+    params.require(:game).permit(:entry_code, :query, :user_id, :mode, players_attributes: [:id, :user_id, :game_id, :_destroy])
   end
 
   def update_game_and_user(game, user)

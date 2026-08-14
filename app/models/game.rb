@@ -2,6 +2,10 @@ class Game < ApplicationRecord
   belongs_to :user
   has_many :players
 
+  def endless?
+    mode == "endless"
+  end
+
   accepts_nested_attributes_for :players, allow_destroy: true
 
   # The deck is large and only needed via games#deck; keep it out of game

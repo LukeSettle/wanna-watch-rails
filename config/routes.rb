@@ -17,6 +17,7 @@ Rails.application.routes.draw do
       post :join
       post :ready
       post :finish_matching
+      post :swipe
       get :deck
     end
   end

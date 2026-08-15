@@ -6,6 +6,15 @@ class Game < ApplicationRecord
     mode == "endless"
   end
 
+  def first_match?
+    mode == "first_match"
+  end
+
+  # Modes that serve one growing shared list with per-swipe reporting.
+  def continuous?
+    endless? || first_match?
+  end
+
   accepts_nested_attributes_for :players, allow_destroy: true
 
   # The deck is large and only needed via games#deck; keep it out of game

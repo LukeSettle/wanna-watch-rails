@@ -180,7 +180,11 @@ function handleSocketMessage(data) {
       const game = JSON.parse(msg.game);
       if (state.game && game.id === state.game.id) applyGameUpdate(game);
     }
-    showMatchBanner(msg.movie_id);
+    if (isFirstMatch()) {
+      state.finalMatchId = msg.movie_id;
+    } else {
+      showMatchBanner(msg.movie_id);
+    }
     render();
     return;
   }
@@ -202,6 +206,14 @@ function handleSocketMessage(data) {
 
 function isEndless() {
   return state.game?.mode === "endless";
+}
+
+function isFirstMatch() {
+  return state.game?.mode === "first_match";
+}
+
+function isContinuous() {
+  return isEndless() || isFirstMatch();
 }
 
 function matchedIdsOf(game) {
@@ -240,7 +252,7 @@ setInterval(async () => {
   const screen = screenName();
   const socketOpen = cable?.isOpen();
   const needsLivePlayers = ["lobby", "waiting", "results"].includes(screen) ||
-    (screen === "match" && isEndless());
+    (screen === "match" && isContinuous());
   if (socketOpen && !needsLivePlayers) return;
 
   pollInFlight = true;
@@ -301,6 +313,7 @@ function leaveGame() {
 
 function defaultGameValues() {
   return {
+    mode: "first_match",
     providers: state.user.providers || [],
     genres: [],
     languages: [],
@@ -398,11 +411,22 @@ async function fetchMovies() {
   }
 }
 
-// Endless mode: report each swipe right away; queue and retry if offline.
+// Continuous modes: report each swipe right away; queue and retry if offline.
 function reportSwipe(movieId, liked) {
   backend.swipe(state.game.id, state.user.id, movieId, liked)
-    .then((res) => {
-      if (res.matched) showMatchBanner(movieId);
+    .then(async (res) => {
+      if (!res.matched) return;
+      if (isFirstMatch()) {
+        state.finalMatchId = movieId;
+        try {
+          applyGameUpdate(await backend.findGameByEntryCode(state.game.entry_code));
+        } catch {
+          // the poll or socket broadcast will deliver the finished game
+        }
+        render();
+      } else {
+        showMatchBanner(movieId);
+      }
     })
     .catch(() => {
       const queue = loadJSON(storageKey("pending_swipes"), []);
@@ -447,10 +471,11 @@ function recordSwipe(movie, liked, { deferFinish } = {}) {
     saveJSON(likedIdsKey(), [...liked_ids]);
   }
 
-  if (isEndless()) {
+  if (isContinuous()) {
     reportSwipe(movie.id, liked);
     updateDeckCounter();
     revealNextCard();
+    maybeShowFunMessages();
     if (unswipedMovies().length < 6) fetchMovies();
     if (unswipedMovies().length === 0) render();
     return;
@@ -474,6 +499,7 @@ function screenName() {
   if (state.view === "login" || state.view === "reset") return state.view;
   if (!state.user?.username) return "name";
   if (!state.game) return state.view;
+  if (isFirstMatch()) return state.game.finished_at ? "matchFound" : "match";
   if (isEndless()) return "match";
   const me = currentPlayer();
   if (state.game.finished_at) return "results";
@@ -503,6 +529,7 @@ function render() {
     history: renderHistoryScreen,
     lobby: renderLobbyScreen,
     match: renderMatchScreen,
+    matchFound: renderMatchFoundScreen,
     waiting: renderWaitingScreen,
     results: renderResultsScreen,
     loading: () => {},
@@ -512,12 +539,13 @@ function render() {
 
 function renderKeyFor(screen) {
   if (screen === "match") {
-    if (isEndless()) {
+    if (isContinuous()) {
       const empty = unswipedMovies().length === 0;
-      return `endless-${state.game.id}-${empty}-${empty && state.fetchingMovies}-${state.noMoreMovies}`;
+      return `continuous-${state.game.id}-${empty}-${empty && state.fetchingMovies}-${state.noMoreMovies}`;
     }
     return `match-${state.game.id}-${state.game.load_more_count}-${state.movies.length}-${state.fetchingMovies}-${state.noMoreMovies}-${state.finishedSent}`;
   }
+  if (screen === "matchFound") return `matchFound-${state.game.id}`;
   if (screen === "lobby" || screen === "waiting") return `${screen}-${state.game.id}`;
   if (screen === "results") return `results-${state.game.id}-${state.game.finished_at}`;
   return `${screen}-${Date.now()}`;
@@ -707,7 +735,7 @@ function renderHomeScreen() {
     <div class="screen">
       <div class="hero">
         <h1 class="headline">Movie night, <span class="accent">solved</span>.</h1>
-        <p class="muted">Start a game, share the code, swipe the same movies. The more you play, the better your decks get — curated from what everyone likes.</p>
+        <p class="muted">Start a game, share the code, and swipe until you all like the same movie. First match wins — that's tonight's pick.</p>
       </div>
 
       <button class="btn btn-primary btn-big" id="quick-play">▶ Quick play</button>
@@ -794,6 +822,7 @@ function renderGamesList() {
     <button class="game-row" data-code="${esc(game.entry_code)}">
       <span class="game-code">${esc(game.entry_code)}</span>
       ${game.mode === "endless" ? `<span class="endless-tag">Endless</span>` : ""}
+      ${game.mode === "first_match" ? `<span class="endless-tag">First match</span>` : ""}
       <span class="game-players">${game.players.map((p) => esc(p.user?.username)).join(", ")}</span>
       <span class="game-resume">Resume →</span>
     </button>`).join("");
@@ -862,13 +891,17 @@ async function renderCreateScreen() {
         <section class="card form-card">
           <label>Game mode</label>
           <div class="mode-options">
-            <button type="button" class="mode-option selected" data-mode="classic">
-              <strong>Classic</strong>
-              <span>Everyone swipes the same 20 movies, then you see your matches together.</span>
+            <button type="button" class="mode-option selected" data-mode="first_match">
+              <strong>First match</strong>
+              <span>Swipe until you all like the same movie. The first match ends the game — that's tonight's pick.</span>
             </button>
             <button type="button" class="mode-option" data-mode="endless">
               <strong>Endless</strong>
-              <span>One shared list that never stops. Swipe on your own time — everyone gets alerted the moment you match.</span>
+              <span>A shared list that never stops. Swipe on your own time and get alerted on every match.</span>
+            </button>
+            <button type="button" class="mode-option" data-mode="classic">
+              <strong>Classic</strong>
+              <span>Everyone swipes the same 20 movies, then compare results.</span>
             </button>
           </div>
         </section>
@@ -996,7 +1029,7 @@ async function renderCreateScreen() {
     const runtime = document.querySelector("#runtime-chips .chip.selected");
 
     const values = {
-      mode: document.querySelector(".mode-option.selected")?.dataset.mode || "classic",
+      mode: document.querySelector(".mode-option.selected")?.dataset.mode || "first_match",
       providers: selected("provider-chips"),
       genres: selected("genre-chips"),
       languages: selected("language-chips"),
@@ -1390,7 +1423,7 @@ async function showMatchesModal() {
 }
 
 function renderMatchScreen() {
-  if (isEndless()) return renderEndlessMatchScreen();
+  if (isContinuous()) return renderContinuousMatchScreen();
 
   if (state.finishedSent && unswipedMovies().length === 0) {
     app.innerHTML = `
@@ -1453,7 +1486,7 @@ function renderMatchScreen() {
   document.getElementById("like-button").addEventListener("click", () => swipeTopCard(true));
 }
 
-function renderEndlessMatchScreen() {
+function renderContinuousMatchScreen() {
   if (state.movies.length === 0 && !state.fetchingMovies && !state.noMoreMovies) {
     fetchMovies();
   }
@@ -1463,12 +1496,14 @@ function renderEndlessMatchScreen() {
       ${topBarHtml(`<span class="code-pill">${esc(state.game.entry_code)}</span>`)}
       <div class="screen center">
         <h1 class="headline-sm">You've swiped everything we could find</h1>
-        <p class="muted">Check your matches, or start a new game with different filters for a fresh well.</p>
-        <button class="btn btn-primary" id="view-matches">♥ View matches</button>
-        <button class="btn btn-ghost" id="back-home">Home</button>
+        <p class="muted">${isEndless()
+          ? "Check your matches, or start a new game with different filters for a fresh well."
+          : "No match yet — start a new game with looser filters and try again."}</p>
+        ${isEndless() ? `<button class="btn btn-primary" id="view-matches">♥ View matches</button>` : ""}
+        <button class="btn ${isEndless() ? "btn-ghost" : "btn-primary"}" id="back-home">Home</button>
       </div>`;
     bindBrandHome();
-    document.getElementById("view-matches").addEventListener("click", showMatchesModal);
+    document.getElementById("view-matches")?.addEventListener("click", showMatchesModal);
     document.getElementById("back-home").addEventListener("click", leaveGame);
     return;
   }
@@ -1488,8 +1523,11 @@ function renderEndlessMatchScreen() {
     ${topBarHtml(`<span class="code-pill">${esc(state.game.entry_code)}</span>`)}
     <div class="screen match-layout">
       <div class="deck-meta">
-        <button type="button" class="meta-pill" id="matches-pill">♥ ${matchedIdsOf(state.game).length} matches</button>
-        <span class="endless-tag">Endless</span>
+        ${isEndless()
+          ? `<button type="button" class="meta-pill" id="matches-pill">♥ ${matchedIdsOf(state.game).length} matches</button>
+             <span class="endless-tag">Endless</span>`
+          : `<span id="deck-counter" class="muted"></span>
+             <span class="endless-tag">First match wins</span>`}
         <button type="button" class="meta-pill" id="invite-pill">+ Invite</button>
       </div>
       <div class="deck" id="deck"></div>
@@ -1503,13 +1541,60 @@ function renderEndlessMatchScreen() {
   buildDeckDom();
   attachDeckGestures(document.getElementById("deck"));
 
-  document.getElementById("matches-pill").addEventListener("click", showMatchesModal);
+  document.getElementById("matches-pill")?.addEventListener("click", showMatchesModal);
   document.getElementById("invite-pill").addEventListener("click", async () => {
     await navigator.clipboard.writeText(shareLink());
     toast("Invite link copied — anyone can join and swipe on their own time!");
   });
   document.getElementById("nope-button").addEventListener("click", () => swipeTopCard(false));
   document.getElementById("like-button").addEventListener("click", () => swipeTopCard(true));
+}
+
+// ---------- first-match celebration ----------
+
+async function renderMatchFoundScreen() {
+  const matchId = state.finalMatchId || matchedIdsOf(state.game)[0];
+
+  const confetti = Array.from({ length: 36 }, () => {
+    const left = Math.random() * 100;
+    const delay = Math.random() * 2.2;
+    const duration = 2.6 + Math.random() * 2;
+    const color = ["#ff5757", "#3ec6ff", "#2ecc71", "#f5c518", "#b98cff"][Math.floor(Math.random() * 5)];
+    const size = 7 + Math.random() * 7;
+    return `<span class="confetti" style="left:${left}vw;background:${color};width:${size}px;height:${size * 1.4}px;animation-delay:${delay}s;animation-duration:${duration}s"></span>`;
+  }).join("");
+
+  app.innerHTML = `
+    <div class="confetti-layer">${confetti}</div>
+    ${topBarHtml(`<span class="code-pill">${esc(state.game.entry_code)}</span>`)}
+    <div class="screen center">
+      <h1 class="headline">It's a match! 🎉</h1>
+      <p class="muted">Everyone agreed — tonight you're watching:</p>
+      <div class="final-movie" id="final-movie"><div class="spinner"></div></div>
+      <div class="button-row full-width">
+        <button class="btn btn-secondary" id="final-details">Details</button>
+        <button class="btn btn-primary" id="play-again">Play again</button>
+      </div>
+      <button class="link" id="back-home">Back to home</button>
+    </div>`;
+
+  bindBrandHome();
+  document.getElementById("final-details").addEventListener("click", () => matchId && openMovieModal(matchId));
+  document.getElementById("play-again").addEventListener("click", (event) => {
+    event.target.disabled = true;
+    quickPlay();
+  });
+  document.getElementById("back-home").addEventListener("click", leaveGame);
+
+  if (!matchId) return;
+  const movie = await fetchMovieSummary(matchId);
+  const el = document.getElementById("final-movie");
+  if (!el || !movie) return;
+  const year = movie.release_date ? movie.release_date.slice(0, 4) : "";
+  el.innerHTML = `
+    ${movie.poster_path ? `<img src="${posterUrl(movie.poster_path, "w342")}" alt="${esc(movie.title)}">` : ""}
+    <strong>${esc(movie.title)}</strong>
+    <span class="muted">${year} · ★ ${movie.vote_average ? movie.vote_average.toFixed(1) : "–"}</span>`;
 }
 
 function movieCardHtml(movie) {
@@ -1549,8 +1634,99 @@ function buildDeckDom() {
 function updateDeckCounter() {
   const counter = document.getElementById("deck-counter");
   if (!counter) return;
+  if (isContinuous()) {
+    const swipedCount = loadJSON(swipedIdsKey(), []).length;
+    counter.textContent = `${swipedCount} swiped`;
+    return;
+  }
   const count = unswipedMovies().length;
   counter.textContent = `${count} movie${count === 1 ? "" : "s"} left`;
+}
+
+// ---------- playful progress messages ----------
+
+const MILESTONE_MESSAGES = {
+  15: "15 swipes in — the perfect movie is playing hard to get.",
+  30: "30 swipes! Somewhere out there, a movie is waiting to be loved.",
+  50: "50 deep. True love takes time.",
+  75: "75 swipes — picky crew. Respect.",
+  100: "100 swipes! This is dedication.",
+  150: "150?! Your movie better show up soon…",
+  200: "200 swipes. At this point, watch them all.",
+};
+
+const shownFunMessages = new Set();
+
+function showFunBanner(message) {
+  let banner = document.getElementById("fun-banner");
+  if (!banner) {
+    banner = document.createElement("div");
+    banner.id = "fun-banner";
+    banner.className = "match-banner fun-banner";
+    document.body.appendChild(banner);
+  }
+  banner.innerHTML = `<span>${esc(message)}</span>`;
+  banner.hidden = false;
+  clearTimeout(showFunBanner.timer);
+  showFunBanner.timer = setTimeout(() => { banner.hidden = true; }, 4000);
+}
+
+function wiggleDeck() {
+  const deck = document.getElementById("deck");
+  if (!deck) return;
+  deck.classList.add("wiggle");
+  setTimeout(() => deck.classList.remove("wiggle"), 900);
+}
+
+function maybeShowFunMessages() {
+  if (state.game?.finished_at) return;
+  const myCount = loadJSON(swipedIdsKey(), []).length;
+
+  if (MILESTONE_MESSAGES[myCount] && !shownFunMessages.has(`m${myCount}`)) {
+    shownFunMessages.add(`m${myCount}`);
+    showFunBanner(MILESTONE_MESSAGES[myCount]);
+    wiggleDeck();
+    return;
+  }
+
+  if (myCount % 10 === 0) maybeShowPositionMessage(myCount);
+}
+
+// Playful nudges about where you are in the shared list vs. everyone else.
+function maybeShowPositionMessage(localCount) {
+  const others = (state.game?.players || []).filter((p) => p.user?.id !== state.user.id);
+  if (others.length === 0) return;
+
+  const me = currentPlayer();
+  const myCount = Math.max(localCount, me?.seen_movie_ids?.length || 0);
+  const leader = others.reduce((a, b) =>
+    (b.seen_movie_ids?.length || 0) > (a.seen_movie_ids?.length || 0) ? b : a
+  );
+  const theirCount = leader.seen_movie_ids?.length || 0;
+  const name = leader.user?.username || "Your friend";
+  const diff = myCount - theirCount;
+
+  let key = null;
+  let message = null;
+  if (diff >= 25) {
+    key = "ahead25";
+    message = `You're ${diff} movies ahead of ${name}. Save some popcorn for the rest of us!`;
+  } else if (diff >= 10) {
+    key = "ahead10";
+    message = `${diff} ahead of ${name} — someone's excited for movie night!`;
+  } else if (diff <= -25) {
+    key = "behind25";
+    message = `${name} is ${-diff} movies ahead. They mean business — time to catch up!`;
+  } else if (diff <= -10) {
+    key = "behind10";
+    message = `${name} is ${-diff} swipes ahead of you. Chase 'em down!`;
+  }
+
+  if (key && !shownFunMessages.has(`p${key}`)) {
+    shownFunMessages.add(`p${key}`);
+    showFunBanner(message);
+    wiggleDeck();
+  }
 }
 
 function topCardEl(deck) {
@@ -1658,7 +1834,7 @@ function attachDeckGestures(deck) {
 }
 
 function flyOut(card, liked, movie) {
-  const lastCard = !isEndless() && unswipedMovies().length <= 1;
+  const lastCard = !isContinuous() && unswipedMovies().length <= 1;
   const exitX = (liked ? 1 : -1) * Math.max(window.innerWidth, 480);
   card.classList.add("flying");
   card.style.transform = `translate(${exitX}px, -30px) rotate(${liked ? 30 : -30}deg)`;

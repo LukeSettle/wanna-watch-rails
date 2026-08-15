@@ -59,6 +59,30 @@ const backend = {
   gamesIndex(userId) {
     return backendRequest(`/games?user_id=${userId}`);
   },
+  friends(userId) {
+    return backendRequest(`/friends/index?user_id=${userId}`);
+  },
+  gameInvites(userId) {
+    return backendRequest(`/game_invites?user_id=${userId}`);
+  },
+  createGameInvite({ inviterId, inviteeId, gameId }) {
+    return backendRequest("/game_invites", {
+      method: "POST",
+      body: { inviter_id: inviterId, invitee_id: inviteeId, game_id: gameId },
+    });
+  },
+  acceptGameInvite(inviteId, userId) {
+    return backendRequest(`/game_invites/${inviteId}/accept`, {
+      method: "POST",
+      body: { user_id: userId },
+    });
+  },
+  declineGameInvite(inviteId, userId) {
+    return backendRequest(`/game_invites/${inviteId}/decline`, {
+      method: "POST",
+      body: { user_id: userId },
+    });
+  },
   upsertGame(game) {
     return backendRequest("/games/upsert", { method: "POST", body: game });
   },
@@ -67,6 +91,9 @@ const backend = {
   },
   joinGame(gameId, userId) {
     return backendRequest(`/games/${gameId}/join`, { method: "POST", body: { user_id: userId } });
+  },
+  leaveGame(gameId, userId) {
+    return backendRequest(`/games/${gameId}/leave`, { method: "POST", body: { user_id: userId } });
   },
   ready(gameId, userId) {
     return backendRequest(`/games/${gameId}/ready`, { method: "POST", body: { user_id: userId } });
@@ -105,46 +132,98 @@ const tmdb = {
     return response.json();
   },
 
-  async genres() {
+  async tv(tvId) {
+    const params = new URLSearchParams({
+      api_key: TMDB_API_KEY,
+      append_to_response: "credits,videos,reviews,watch/providers",
+    });
+    const response = await fetch(`https://api.themoviedb.org/3/tv/${tvId}?${params}`);
+    if (!response.ok) throw new Error(`TMDB tv failed (${response.status})`);
+    const data = await response.json();
+    return {
+      ...data,
+      title: data.name || data.title,
+      release_date: data.first_air_date || data.release_date,
+      runtime: Array.isArray(data.episode_run_time) ? data.episode_run_time[0] : data.runtime,
+      media_type: "tv",
+    };
+  },
+
+  async genres(media = "movie") {
+    const kind = media === "tv" ? "tv" : "movie";
     const response = await fetch(
-      `https://api.themoviedb.org/3/genre/movie/list?api_key=${TMDB_API_KEY}&language=en-US`
+      `https://api.themoviedb.org/3/genre/${kind}/list?api_key=${TMDB_API_KEY}&language=en-US`
     );
     if (!response.ok) throw new Error(`TMDB genres failed (${response.status})`);
     return (await response.json()).genres;
   },
+
+  async details(id, mediaType = "movie") {
+    return mediaType === "tv" ? this.tv(id) : this.movie(id);
+  },
 };
 
-// Builds the identical query the React Native GameForm builds.
+// Builds the discover query stored on the game (deck builder reads params).
 function buildDiscoverQuery(values) {
+  const year = new Date().getFullYear();
+  const ranges = (values.releaseYearRanges?.length
+    ? values.releaseYearRanges
+    : [values.releaseYearRange || [1950, year]]
+  ).map(([from, to]) => [Number(from), Number(to)]);
+
+  const minYear = Math.min(...ranges.map(([from]) => from));
+  const maxYear = Math.max(...ranges.map(([, to]) => to));
+  const mediaType = values.mediaType || "movie";
+
   const params = {
     with_origin_country: "US",
     page: Math.floor(Math.random() * 5) + 1,
     sort_by: "popularity.desc",
+    media_type: mediaType,
     "vote_average.gte": values.userScoreRange[0],
     "vote_average.lte": values.userScoreRange[1],
-    "primary_release_date.gte": `${values.releaseYearRange[0]}-01-01`,
-    "primary_release_date.lte": `${values.releaseYearRange[1]}-12-31`,
+    "primary_release_date.gte": `${minYear}-01-01`,
+    "primary_release_date.lte": `${maxYear}-12-31`,
     "with_runtime.gte": values.runtimeRange[0],
     "with_runtime.lte": values.runtimeRange[1],
   };
 
+  if (ranges.length > 1) {
+    params.ww_year_ranges = ranges.map(([from, to]) => `${from}-${to}`).join(",");
+  }
+
+  if (values.favorPopular) {
+    params.favor_popular = "true";
+    params["vote_count.gte"] = 500;
+  }
+
+  const genreIds = (values.genres || []).map(Number);
+  const wantsKids = genreIds.includes(10751) || genreIds.includes(10762);
+  if (!values.includeKids && !wantsKids) {
+    params.without_genres = mediaType === "movie" ? "10751" : "10751|10762";
+  }
+
   if (values.providers.length > 0) {
     params.with_watch_providers = values.providers.join("|");
     params.watch_region = "US";
+    // Subscription streaming only — without this, discover also matches rent/buy.
+    params.with_watch_monetization_types = "flatrate";
   }
-  if (values.genres.length > 0) {
-    params.with_genres = values.genres.join("|");
+  if (genreIds.length > 0) {
+    params.with_genres = genreIds.join("|");
   }
   if (values.languages.length > 0) {
     params.with_original_language = values.languages.join("|");
   }
 
+  const path = mediaType === "tv" ? "discover/tv" : "discover/movie";
   return {
     method: "GET",
-    url: `https://api.themoviedb.org/3/discover/movie?api_key=${TMDB_API_KEY}`,
+    url: `https://api.themoviedb.org/3/${path}?api_key=${TMDB_API_KEY}`,
     params,
   };
 }
+
 
 function generateEntryCode() {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";

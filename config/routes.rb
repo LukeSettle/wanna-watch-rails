@@ -11,10 +11,18 @@ Rails.application.routes.draw do
   get 'friends/index'
   get 'friends/movie_ids'
 
+  resources :game_invites, only: [:index, :create] do
+    member do
+      post :accept
+      post :decline
+    end
+  end
+
   resources :games, only: [:index] do
     member do
       post :finish
       post :join
+      post :leave
       post :ready
       post :finish_matching
       post :swipe

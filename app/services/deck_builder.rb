@@ -1,15 +1,15 @@
-# Builds a curated deck of movies for one round of a game.
+# Builds a curated deck of movies/TV for one round of a game.
 #
 # Sourcing strategy: instead of raw TMDB popularity (franchise blockbusters,
 # unreleased hype titles, junk on deep pages), each deck mixes quality pools:
 #
-#   recs      - TMDB recommendations seeded by the players' liked movies
+#   recs      - TMDB recommendations seeded by the players' liked titles
 #   popular   - current popular titles, filtered to well-rated and widely voted
-#   gems      - highly rated but less-known movies ("hidden gems")
+#   gems      - highly rated but less-known titles ("hidden gems")
 #   acclaimed - widely loved catalog picks across eras
 #
 # With no like history the deck is popular + gems + acclaimed. As players like
-# movies, recommendations take a growing share. Movies any player has already
+# titles, recommendations take a growing share. Titles any player has already
 # liked, swiped past, or been dealt in recent games are excluded, so decks
 # never repeat.
 class DeckBuilder
@@ -17,6 +17,7 @@ class DeckBuilder
   MAX_SEEDS = 6
   RECENT_GAMES_PER_PLAYER = 10
   RECENT_DEALT_GAMES = 15
+  DOCUMENTARY_GENRE = 99
 
   def initialize(game)
     @game = game
@@ -27,12 +28,21 @@ class DeckBuilder
 
   def build
     recs = recommendation_candidates
-    plan = [
-      [recs, [recs.size, personalized_target].min],
-      [popular_candidates, 6],
-      [hidden_gem_candidates, 4],
-      [acclaimed_candidates, 4],
-    ]
+    plan = if favor_popular?
+      [
+        [recs, [recs.size, personalized_target].min],
+        [popular_candidates, 12],
+        [hidden_gem_candidates, 2],
+        [acclaimed_candidates, 2],
+      ]
+    else
+      [
+        [recs, [recs.size, personalized_target].min],
+        [popular_candidates, 6],
+        [hidden_gem_candidates, 4],
+        [acclaimed_candidates, 4],
+      ]
+    end
 
     deck = interleave(plan)
     fill(deck, plan.map(&:first))
@@ -48,12 +58,24 @@ class DeckBuilder
     {}
   end
 
+  def favor_popular?
+    ActiveModel::Type::Boolean.new.cast(@query_params["favor_popular"])
+  end
+
+  def media_types
+    case @query_params["media_type"].to_s
+    when "tv" then %w[tv]
+    when "both" then %w[movie tv]
+    else %w[movie]
+    end
+  end
+
   # More like-history means a bigger personalized share (max half the deck).
   def personalized_target
     [seed_movie_ids.size * 2, DECK_SIZE / 2].min
   end
 
-  # Players' liked movies, most-shared first, rotated per round so
+  # Players' liked titles, most-shared first, rotated per round so
   # "keep playing" seeds from different favorites.
   def seed_movie_ids
     @seed_movie_ids ||= begin
@@ -79,22 +101,27 @@ class DeckBuilder
     movies = {}
 
     seed_movie_ids.each do |seed_id|
-      TmdbClient.recommendations(seed_id).each do |movie|
-        next unless suitable?(movie)
-        next if movie["vote_count"].to_i < 150 || movie["vote_average"].to_f < 6.2
+      media_types.each do |media|
+        results = media == "tv" ? TmdbClient.tv_recommendations(seed_id) : TmdbClient.recommendations(seed_id)
+        results.each do |item|
+          movie = normalize(item, media)
+          next unless suitable?(movie)
+          next unless available_on_providers?(movie)
+          next if movie["vote_count"].to_i < 150 || movie["vote_average"].to_f < 6.2
 
-        scores[movie["id"]] += 1
-        movies[movie["id"]] = movie
+          scores[deck_key(movie)] += 1
+          movies[deck_key(movie)] = movie
+        end
       end
     end
 
-    scores.sort_by { |_, score| -score }.map { |movie_id, _| movies[movie_id] }
+    scores.sort_by { |_, score| -score }.map { |key, _| movies[key] }
   end
 
   def popular_candidates
     @popular_candidates ||= discover_pool(
       "sort_by" => "popularity.desc",
-      "vote_count.gte" => 400,
+      "vote_count.gte" => favor_popular? ? 800 : 400,
       "vote_average.gte" => 6.3,
       "page" => page_for(:popular, 3)
     )
@@ -127,28 +154,94 @@ class DeckBuilder
   end
 
   def discover_pool(overrides)
-    TmdbClient.discover(base_discover_params.merge(overrides))
-              .select { |movie| suitable?(movie) }
+    ranges = year_ranges
+    ranges = [[nil, nil]] if ranges.empty?
+
+    media_types.flat_map do |media|
+      ranges.flat_map do |from, to|
+        params = base_discover_params(media).merge(overrides)
+        apply_year_range!(params, media, from, to)
+        TmdbClient.discover(params, media: media)
+                  .map { |item| normalize(item, media) }
+                  .select { |movie| suitable?(movie) }
+      end
+    end.uniq { |movie| deck_key(movie) }
   end
 
-  def base_discover_params
-    today = Date.current.iso8601
+  def base_discover_params(media)
     params = {
       "include_adult" => false,
-      "primary_release_date.lte" => [@query_params["primary_release_date.lte"], today].compact.min,
-      "primary_release_date.gte" => @query_params["primary_release_date.gte"],
       "with_genres" => @query_params["with_genres"],
+      "without_genres" => @query_params["without_genres"],
       "with_watch_providers" => @query_params["with_watch_providers"],
       "watch_region" => @query_params["watch_region"],
       "with_original_language" => @query_params["with_original_language"],
-      "with_runtime.gte" => @query_params["with_runtime.gte"],
-      "with_runtime.lte" => @query_params["with_runtime.lte"],
     }
+
+    if provider_filter?
+      params["watch_region"] = params["watch_region"].presence || "US"
+      params["with_watch_monetization_types"] = "flatrate"
+    end
+
+    if media == "movie"
+      params["with_runtime.gte"] = @query_params["with_runtime.gte"]
+      params["with_runtime.lte"] = @query_params["with_runtime.lte"]
+    end
+
     # A chosen language should override the default US-origin bias.
     if @query_params["with_original_language"].blank?
       params["with_origin_country"] = @query_params["with_origin_country"]
     end
+
     params.compact
+  end
+
+  def date_keys(media)
+    media == "tv" ? %w[first_air_date.lte first_air_date.gte] : %w[primary_release_date.lte primary_release_date.gte]
+  end
+
+  def apply_year_range!(params, media, from, to)
+    lte_key, gte_key = date_keys(media)
+    today = Date.current.iso8601
+    params[gte_key] = "#{from}-01-01" if from
+    upper = to ? "#{to}-12-31" : today
+    params[lte_key] = [upper, today].min
+  end
+
+  def year_ranges
+    @year_ranges ||= begin
+      raw = @query_params["ww_year_ranges"].to_s
+      if raw.present?
+        raw.split(",").filter_map do |pair|
+          from, to = pair.split("-").map(&:to_i)
+          [from, to] if from.positive? && to.positive?
+        end
+      else
+        from = @query_params["primary_release_date.gte"].to_s.slice(0, 4).to_i
+        to = @query_params["primary_release_date.lte"].to_s.slice(0, 4).to_i
+        if from.positive? || to.positive?
+          [[from.positive? ? from : 1900, to.positive? ? to : Date.current.year]]
+        else
+          []
+        end
+      end
+    end
+  end
+
+  def normalize(item, media)
+    if media == "tv"
+      item.merge(
+        "title" => item["name"].presence || item["title"],
+        "release_date" => item["first_air_date"].presence || item["release_date"],
+        "media_type" => "tv"
+      )
+    else
+      item.merge("media_type" => "movie")
+    end
+  end
+
+  def deck_key(movie)
+    "#{movie['media_type']}:#{movie['id']}"
   end
 
   # Different page per pool, stable within a round, varies per game and round.
@@ -158,7 +251,7 @@ class DeckBuilder
   end
 
   # Deal one card from each pool in turn (up to its budget) so the deck feels
-  # like a mix rather than blocks of similar movies.
+  # like a mix rather than blocks of similar titles.
   def interleave(plan)
     deck = []
     queues = plan.map { |movies, budget| { movies: movies.dup, budget: budget } }
@@ -169,7 +262,7 @@ class DeckBuilder
         next if q[:budget] <= 0 || q[:movies].empty?
 
         movie = q[:movies].shift
-        next if deck.any? { |m| m["id"] == movie["id"] }
+        next unless accept_for_deck?(deck, movie)
 
         deck << movie
         q[:budget] -= 1
@@ -182,24 +275,56 @@ class DeckBuilder
     pools.each do |movies|
       movies.each do |movie|
         break if deck.size >= DECK_SIZE
+        next unless accept_for_deck?(deck, movie)
 
-        deck << movie unless deck.any? { |m| m["id"] == movie["id"] }
+        deck << movie
       end
     end
   end
 
-  DOCUMENTARY_GENRE = 99
+  def accept_for_deck?(deck, movie)
+    return false if deck.any? { |m| deck_key(m) == deck_key(movie) }
+
+    available_on_providers?(movie)
+  end
+
+  def provider_filter?
+    selected_provider_ids.any?
+  end
+
+  def selected_provider_ids
+    @selected_provider_ids ||= @query_params["with_watch_providers"].to_s.split(/[|,]/).map(&:presence).compact
+  end
+
+  # TMDB discover provider filters are approximate; verify subscription
+  # availability for the game region before dealing a title.
+  def available_on_providers?(movie)
+    return true unless provider_filter?
+
+    key = deck_key(movie)
+    @provider_availability ||= {}
+    return @provider_availability[key] if @provider_availability.key?(key)
+
+    region = @query_params["watch_region"].presence || "US"
+    regions = TmdbClient.watch_providers(movie["id"], media: movie["media_type"] || "movie")
+    streaming = (regions.dig(region, "flatrate") || []).map { |p| p["provider_id"].to_s }
+    @provider_availability[key] = (streaming & selected_provider_ids).any?
+  end
 
   def suitable?(movie)
     return false if movie["poster_path"].blank? || movie["adult"]
     return false if @excluded_ids.include?(movie["id"])
     return false if movie["release_date"].blank? || movie["release_date"] > Date.current.iso8601
+
     # Documentaries rate high on TMDB but are rarely movie-night picks;
     # only include them when explicitly requested.
     if movie["genre_ids"].to_a.include?(DOCUMENTARY_GENRE) &&
        !@query_params["with_genres"].to_s.split("|").include?(DOCUMENTARY_GENRE.to_s)
       return false
     end
+
+    excluded_genres = @query_params["without_genres"].to_s.split("|").map(&:to_i)
+    return false if excluded_genres.any? && (movie["genre_ids"].to_a & excluded_genres).any?
 
     matches_filters?(movie)
   end
@@ -214,10 +339,10 @@ class DeckBuilder
     return false if movie["vote_average"].to_f < min_rating
 
     year = movie["release_date"].to_s.slice(0, 4).to_i
-    year_from = @query_params["primary_release_date.gte"].to_s.slice(0, 4).to_i
-    year_to = @query_params["primary_release_date.lte"].to_s.slice(0, 4).to_i
-    return false if year_from.positive? && year.positive? && year < year_from
-    return false if year_to.positive? && year.positive? && year > year_to
+    ranges = year_ranges
+    if ranges.any? && year.positive?
+      return false unless ranges.any? { |from, to| year >= from && year <= to }
+    end
 
     true
   end

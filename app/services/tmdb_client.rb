@@ -17,11 +17,22 @@ class TmdbClient
     {}
   end
 
-  def self.discover(params = {})
-    get("/discover/movie", params)["results"] || []
+  def self.discover(params = {}, media: "movie")
+    path = media.to_s == "tv" ? "/discover/tv" : "/discover/movie"
+    get(path, params)["results"] || []
   end
 
   def self.recommendations(movie_id)
     get("/movie/#{movie_id}/recommendations")["results"] || []
+  end
+
+  def self.tv_recommendations(tv_id)
+    get("/tv/#{tv_id}/recommendations")["results"] || []
+  end
+
+  # Region hash: { "US" => { "flatrate" => [...], "rent" => [...], ... }, ... }
+  def self.watch_providers(id, media: "movie")
+    path = media.to_s == "tv" ? "/tv/#{id}/watch/providers" : "/movie/#{id}/watch/providers"
+    get(path)["results"] || {}
   end
 end

@@ -134,6 +134,36 @@ class GamesController < ApiController
     render_game(game)
   end
 
+  def leave
+    game = Game.find(params[:id])
+    user = User.find(params[:user_id])
+    player = game.players.find_by(user: user)
+
+    unless player || game.user_id == user.id
+      return render json: { error: "Not in this game" }, status: :unprocessable_entity
+    end
+
+    notify_ids = (game.players.map(&:user_id) + [user.id]).uniq
+    player&.destroy!
+
+    remaining = game.players.reload
+    if remaining.empty?
+      game.destroy!
+    else
+      game.update!(user_id: remaining.first.user_id) if game.user_id == user.id
+      broadcast_to_game(game, "#{user.username} left") if player
+    end
+
+    notify_ids.each do |user_id|
+      ActionCable.server.broadcast(
+        "user_games_#{user_id}",
+        { type: "system", message: "game_index_updated" }
+      )
+    end
+
+    render json: { message: "Left game" }, status: :ok
+  end
+
   def ready
     game = Game.find(params[:id])
     user = User.find(params[:user_id])

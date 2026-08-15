@@ -9,6 +9,7 @@ const state = {
   serverMessages: [],
   currentGames: [],
   friends: [],
+  invites: [],
   noMoreMovies: false,
   finishedSent: false,
   fetchingMovies: false,
@@ -149,6 +150,7 @@ async function enterHome() {
   cable.subscribe({ channel: "UserGamesChannel" });
   render();
   refreshGamesList();
+  refreshFriendsAndInvites();
 }
 
 function connectCable() {
@@ -165,6 +167,137 @@ async function refreshGamesList() {
   renderGamesList();
 }
 
+async function refreshFriendsAndInvites() {
+  if (!state.user) return;
+  try {
+    const [friends, invites] = await Promise.all([
+      backend.friends(state.user.id),
+      backend.gameInvites(state.user.id),
+    ]);
+    state.friends = friends.filter((f) => f.id !== state.user.id);
+    state.invites = invites;
+  } catch {
+    state.friends = [];
+    state.invites = [];
+  }
+  renderFriendsList();
+  renderIncomingInvites();
+  maybeShowInvitePopup();
+}
+
+function incomingInvites() {
+  return state.invites.filter((i) => i.status === "pending" && i.invitee?.id === state.user?.id);
+}
+
+function outgoingInvitesForGame(gameId) {
+  return state.invites.filter(
+    (i) => i.status === "pending" && i.inviter?.id === state.user?.id && i.game_id === gameId
+  );
+}
+
+function upsertInvite(invite) {
+  if (!invite?.id) return;
+  const index = state.invites.findIndex((i) => i.id === invite.id);
+  if (invite.status === "pending") {
+    if (index >= 0) state.invites[index] = invite;
+    else state.invites.unshift(invite);
+  } else if (index >= 0) {
+    state.invites.splice(index, 1);
+  }
+  hideInvitePopupIfStale(invite);
+}
+
+function hideInvitePopupIfStale(invite) {
+  const popup = document.getElementById("invite-popup");
+  if (!popup || popup.hidden) return;
+  if (Number(popup.dataset.inviteId) === invite.id && invite.status !== "pending") {
+    hideInvitePopup();
+  }
+}
+
+function maybeShowInvitePopup() {
+  const popup = document.getElementById("invite-popup");
+  if (popup && !popup.hidden) return;
+  const next = incomingInvites()[0];
+  if (next) showInvitePopup(next);
+}
+
+function showInvitePopup(invite) {
+  const popup = document.getElementById("invite-popup");
+  if (!popup || !invite) return;
+  popup.dataset.inviteId = invite.id;
+  popup.hidden = false;
+  popup.querySelector(".invite-popup-text").textContent =
+    `${invite.inviter?.username || "Someone"} invited you to play (${invite.entry_code})`;
+}
+
+function hideInvitePopup() {
+  const popup = document.getElementById("invite-popup");
+  if (!popup) return;
+  popup.hidden = true;
+  delete popup.dataset.inviteId;
+}
+
+async function acceptInvite(inviteId) {
+  try {
+    const invite = await backend.acceptGameInvite(inviteId, state.user.id);
+    upsertInvite(invite);
+    hideInvitePopup();
+    if (invite.game) startGame(invite.game);
+    else await joinGameByCode(invite.entry_code);
+    maybeShowInvitePopup();
+  } catch {
+    toast("Couldn't accept that invite.");
+  }
+}
+
+async function declineInvite(inviteId) {
+  try {
+    const invite = await backend.declineGameInvite(inviteId, state.user.id);
+    upsertInvite(invite);
+    hideInvitePopup();
+    renderIncomingInvites();
+    maybeShowInvitePopup();
+  } catch {
+    toast("Couldn't decline that invite.");
+  }
+}
+
+async function inviteFriendToGame(friendId, gameId) {
+  try {
+    const invite = await backend.createGameInvite({
+      inviterId: state.user.id,
+      inviteeId: friendId,
+      gameId,
+    });
+    upsertInvite(invite);
+    toast("Invite sent!");
+    renderLobbyInvites();
+    renderFriendsList();
+    return invite;
+  } catch (error) {
+    toast(error.serverMessage || "Couldn't send invite.");
+    return null;
+  }
+}
+
+async function startGameWithFriend(friendId) {
+  try {
+    const query = buildDiscoverQuery(defaultGameValues());
+    const game = await backend.upsertGame({
+      entry_code: generateEntryCode(),
+      query: JSON.stringify(query),
+      user_id: state.user.id,
+      providers: state.user.providers || [],
+      mode: "first_match",
+    });
+    await inviteFriendToGame(friendId, game.id);
+    startGame(game);
+  } catch {
+    toast("Couldn't start a game with that friend.");
+  }
+}
+
 // ---------- socket ----------
 
 function gameChannelParams() {
@@ -174,6 +307,21 @@ function gameChannelParams() {
 function handleSocketMessage(data) {
   const msg = data.message;
   if (!msg) return;
+
+  if (msg.type === "game_invite" || msg.type === "game_invite_updated") {
+    upsertInvite(msg.invite);
+    if (msg.type === "game_invite" && msg.invite?.invitee?.id === state.user?.id && msg.invite.status === "pending") {
+      showInvitePopup(msg.invite);
+    } else if (msg.type === "game_invite_updated" && msg.invite?.inviter?.id === state.user?.id) {
+      const name = msg.invite.invitee?.username || "Friend";
+      if (msg.invite.status === "accepted") toast(`${name} accepted your invite!`);
+      else if (msg.invite.status === "declined") toast(`${name} declined your invite.`);
+      renderLobbyInvites();
+    }
+    renderFriendsList();
+    renderIncomingInvites();
+    return;
+  }
 
   if (msg.type === "match") {
     if (typeof msg.game === "string" && msg.game.length > 2) {
@@ -309,6 +457,7 @@ function leaveGame() {
   cable.subscribe({ channel: "UserGamesChannel" });
   render();
   refreshGamesList();
+  refreshFriendsAndInvites();
 }
 
 function defaultGameValues() {
@@ -319,7 +468,11 @@ function defaultGameValues() {
     languages: [],
     userScoreRange: [0, 10],
     releaseYearRange: [1980, new Date().getFullYear()],
+    releaseYearRanges: [[1980, new Date().getFullYear()]],
     runtimeRange: [0, 240],
+    mediaType: "movie",
+    includeKids: false,
+    favorPopular: false,
   };
 }
 
@@ -557,6 +710,7 @@ function updateDynamicLists(screen) {
   if (players) players.innerHTML = playerListHtml(screen === "waiting");
   const feed = document.getElementById("message-feed");
   if (feed) feed.innerHTML = messageFeedHtml();
+  if (screen === "lobby") renderLobbyInvites();
 }
 
 function topBarHtml(subtitle) {
@@ -749,6 +903,16 @@ function renderHomeScreen() {
         </div>
       </form>
 
+      <section class="card list-card" id="incoming-invites-section" hidden>
+        <h2>Game invites</h2>
+        <div id="incoming-invites"></div>
+      </section>
+
+      <section class="card list-card">
+        <h2>Friends</h2>
+        <div id="friends-list"><p class="muted">Loading…</p></div>
+      </section>
+
       <section class="card list-card">
         <h2>Your games</h2>
         <div id="games-list"><p class="muted">Loading…</p></div>
@@ -806,7 +970,68 @@ function renderHomeScreen() {
   });
 
   renderGamesList();
+  renderFriendsList();
+  renderIncomingInvites();
   refreshGamesList();
+  refreshFriendsAndInvites();
+}
+
+function renderIncomingInvites() {
+  const section = document.getElementById("incoming-invites-section");
+  const container = document.getElementById("incoming-invites");
+  if (!section || !container) return;
+
+  const invites = incomingInvites();
+  if (invites.length === 0) {
+    section.hidden = true;
+    container.innerHTML = "";
+    return;
+  }
+
+  section.hidden = false;
+  container.innerHTML = invites.map((invite) => `
+    <div class="friend-row">
+      <div class="friend-info">
+        <strong>${esc(invite.inviter?.username || "Friend")}</strong>
+        <span class="muted">Code ${esc(invite.entry_code)}</span>
+      </div>
+      <div class="friend-actions">
+        <button class="btn btn-secondary btn-small" data-accept="${invite.id}">Accept</button>
+        <button class="btn btn-ghost btn-small" data-decline="${invite.id}">Decline</button>
+      </div>
+    </div>`).join("");
+
+  container.querySelectorAll("[data-accept]").forEach((btn) => {
+    btn.addEventListener("click", () => acceptInvite(Number(btn.dataset.accept)));
+  });
+  container.querySelectorAll("[data-decline]").forEach((btn) => {
+    btn.addEventListener("click", () => declineInvite(Number(btn.dataset.decline)));
+  });
+}
+
+function renderFriendsList() {
+  const container = document.getElementById("friends-list");
+  if (!container) return;
+
+  if (state.friends.length === 0) {
+    container.innerHTML = `<p class="muted">Play a game with someone and they'll show up here — then you can invite them in-app.</p>`;
+    return;
+  }
+
+  container.innerHTML = state.friends.map((friend) => `
+    <div class="friend-row">
+      <div class="friend-info">
+        <strong>${esc(friend.username || "Player")}</strong>
+      </div>
+      <button class="btn btn-secondary btn-small" data-play="${friend.id}">Play</button>
+    </div>`).join("");
+
+  container.querySelectorAll("[data-play]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      await startGameWithFriend(Number(btn.dataset.play));
+    });
+  });
 }
 
 function renderGamesList() {
@@ -819,16 +1044,41 @@ function renderGamesList() {
   }
 
   container.innerHTML = state.currentGames.map((game) => `
-    <button class="game-row" data-code="${esc(game.entry_code)}">
-      <span class="game-code">${esc(game.entry_code)}</span>
-      ${game.mode === "endless" ? `<span class="endless-tag">Endless</span>` : ""}
-      ${game.mode === "first_match" ? `<span class="endless-tag">First match</span>` : ""}
-      <span class="game-players">${game.players.map((p) => esc(p.user?.username)).join(", ")}</span>
-      <span class="game-resume">Resume →</span>
-    </button>`).join("");
+    <div class="game-row">
+      <button class="game-row-main" data-code="${esc(game.entry_code)}">
+        <span class="game-code">${esc(game.entry_code)}</span>
+        ${game.mode === "endless" ? `<span class="endless-tag">Endless</span>` : ""}
+        ${game.mode === "first_match" ? `<span class="endless-tag">First match</span>` : ""}
+        <span class="game-players">${game.players.map((p) => esc(p.user?.username)).join(", ")}</span>
+        <span class="game-resume">Resume →</span>
+      </button>
+      <button class="game-remove" data-id="${game.id}" data-code="${esc(game.entry_code)}" aria-label="Remove from game" title="Remove from game">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+          <path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v9h-2V9zm4 0h2v9h-2V9zM7 9h2v9H7V9zm-1 12h12l1-12H5l1 12z"/>
+        </svg>
+      </button>
+    </div>`).join("");
 
-  container.querySelectorAll(".game-row").forEach((row) => {
+  container.querySelectorAll(".game-row-main").forEach((row) => {
     row.addEventListener("click", () => joinGameByCode(row.dataset.code));
+  });
+
+  container.querySelectorAll(".game-remove").forEach((btn) => {
+    btn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const code = btn.dataset.code;
+      if (!confirm(`Remove yourself from game ${code}?`)) return;
+
+      btn.disabled = true;
+      try {
+        await backend.leaveGame(Number(btn.dataset.id), state.user.id);
+        if (state.game?.id === Number(btn.dataset.id)) leaveGame();
+        else await refreshGamesList();
+      } catch {
+        toast("Couldn't leave that game. Try again.");
+        btn.disabled = false;
+      }
+    });
   });
 }
 
@@ -839,22 +1089,22 @@ let genresCache = null;
 async function renderCreateScreen() {
   const currentYear = new Date().getFullYear();
   const eraPresets = [
-    { label: "Any time", from: 1950, to: currentYear },
+    { label: "Any time", from: 1950, to: currentYear, any: true },
     { label: "New", from: 2020, to: currentYear },
     { label: "2010s", from: 2010, to: 2019 },
     { label: "2000s", from: 2000, to: 2009 },
     { label: "80s & 90s", from: 1980, to: 1999 },
     { label: "Classics", from: 1950, to: 1979 },
   ];
-  // One-tap bundles that set genres + rating + era underneath.
   const vibePresets = [
-    { label: "Surprise me", genres: [], rating: 0, era: "Any time" },
-    { label: "Date night", genres: [10749, 35, 18], rating: 6, era: "Any time" },
-    { label: "Laugh out loud", genres: [35], rating: 6, era: "Any time" },
-    { label: "Edge of your seat", genres: [53, 27, 9648, 80], rating: 6, era: "Any time" },
-    { label: "Family night", genres: [10751, 16, 12], rating: 6, era: "Any time" },
-    { label: "Critically acclaimed", genres: [], rating: 8, era: "Any time" },
-    { label: "Throwback", genres: [], rating: 7, era: "80s & 90s" },
+    { label: "Surprise me", genres: [], rating: 0, era: "Any time", favorPopular: false, includeKids: false },
+    { label: "Crowd favorites", genres: [], rating: 6, era: "Any time", favorPopular: true, includeKids: false },
+    { label: "Date night", genres: [10749, 35, 18], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
+    { label: "Laugh out loud", genres: [35], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
+    { label: "Edge of your seat", genres: [53, 27, 9648, 80], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
+    { label: "Family night", genres: [10751, 16, 12], rating: 6, era: "Any time", favorPopular: false, includeKids: true },
+    { label: "Critically acclaimed", genres: [], rating: 8, era: "Any time", favorPopular: false, includeKids: false },
+    { label: "Throwback", genres: [], rating: 7, era: "80s & 90s", favorPopular: false, includeKids: false },
   ];
   const ratingPresets = [
     { label: "Any rating", min: 0 },
@@ -884,69 +1134,100 @@ async function renderCreateScreen() {
 
   app.innerHTML = `
     ${topBarHtml("")}
-    <div class="screen">
+    <div class="screen create-screen">
       <h1 class="headline-sm">Custom game</h1>
-      <p class="muted">Pick a mode and a vibe — everything else is optional. We curate from what everyone playing has liked.</p>
+      <p class="muted create-lede">Pick a mode and vibe — fine-tune only if you want.</p>
       <form id="create-form">
         <section class="card form-card">
           <label>Game mode</label>
           <div class="mode-options">
             <button type="button" class="mode-option selected" data-mode="first_match">
               <strong>First match</strong>
-              <span>Swipe until you all like the same movie. The first match ends the game — that's tonight's pick.</span>
+              <span>First title everyone likes wins — that's tonight's pick.</span>
             </button>
             <button type="button" class="mode-option" data-mode="endless">
               <strong>Endless</strong>
-              <span>A shared list that never stops. Swipe on your own time and get alerted on every match.</span>
+              <span>Keep swiping on your own time; get alerted on every match.</span>
             </button>
             <button type="button" class="mode-option" data-mode="classic">
               <strong>Classic</strong>
-              <span>Everyone swipes the same 20 movies, then compare results.</span>
+              <span>Same 20 titles for everyone, then compare.</span>
             </button>
           </div>
         </section>
 
         <section class="card form-card">
-          <label>What's the vibe?</label>
-          <p class="hint">One tap sets the mood — tweak anything below after.</p>
-          <div class="chips single" id="vibe-chips">
-            ${vibePresets.map((v, i) => `<button type="button" class="chip ${i === 0 ? "selected" : ""}" data-vibe="${i}">${esc(v.label)}</button>`).join("")}
+          <div class="field-block">
+            <label>What's the vibe?</label>
+            <p class="hint">One tap sets the mood — tweak below after.</p>
+            <div class="chips single" id="vibe-chips">
+              ${vibePresets.map((v, i) => `<button type="button" class="chip ${i === 0 ? "selected" : ""}" data-vibe="${i}">${esc(v.label)}</button>`).join("")}
+            </div>
           </div>
-        </section>
 
-        <section class="card form-card">
-          <label>Where do you watch?</label>
-          <p class="hint">Leave blank for any service. We'll remember your picks.</p>
-          <div class="chips" id="provider-chips">
-            ${PROVIDERS.map((p) => `<button type="button" class="chip" data-value="${p.code}">${esc(p.title)}</button>`).join("")}
+          <div class="field-block">
+            <label>Movies or TV?</label>
+            <div class="chips single" id="media-chips">
+              <button type="button" class="chip selected" data-value="movie">Movies</button>
+              <button type="button" class="chip" data-value="tv">TV shows</button>
+              <button type="button" class="chip" data-value="both">Both</button>
+            </div>
+          </div>
+
+          <div class="field-block">
+            <label>Where do you watch?</label>
+            <p class="hint">Optional — we'll remember your picks.</p>
+            <div class="chips" id="provider-chips">
+              ${PROVIDERS.map((p) => `<button type="button" class="chip" data-value="${p.code}">${esc(p.title)}</button>`).join("")}
+            </div>
           </div>
         </section>
 
         <details class="card fine-tune">
           <summary>Fine-tune <span class="muted">(optional)</span></summary>
-
-          <div class="form-card">
-            <label>Genres</label>
-            <div class="chips" id="genre-chips"><span class="muted">Loading genres…</span></div>
-
-            <label>When was it made?</label>
-            <div class="chips single" id="era-chips">
-              ${presetChips(eraPresets, (item) => `data-from="${item.from}" data-to="${item.to}"`)}
+          <div class="form-card fine-tune-body">
+            <div class="field-block">
+              <label>Genres</label>
+              <div class="chips" id="genre-chips"><span class="muted">Loading genres…</span></div>
             </div>
 
-            <label>How good does it need to be?</label>
-            <div class="chips single" id="rating-chips">
-              ${presetChips(ratingPresets, (item) => `data-min="${item.min}"`)}
+            <div class="field-block">
+              <label>When was it made?</label>
+              <p class="hint">Pick one or combine eras (e.g. New + Classics).</p>
+              <div class="chips" id="era-chips">
+                ${eraPresets.map((item, index) => `
+                  <button type="button" class="chip ${index === 0 ? "selected" : ""}" data-from="${item.from}" data-to="${item.to}" data-any="${item.any ? "1" : "0"}">${esc(item.label)}</button>
+                `).join("")}
+              </div>
             </div>
 
-            <label>How long is movie night?</label>
-            <div class="chips single" id="runtime-chips">
-              ${presetChips(runtimePresets, (item) => `data-min="${item.min}" data-max="${item.max}"`)}
+            <div class="field-block">
+              <label>How good does it need to be?</label>
+              <div class="chips single" id="rating-chips">
+                ${presetChips(ratingPresets, (item) => `data-min="${item.min}"`)}
+              </div>
             </div>
 
-            <label>Language</label>
-            <div class="chips" id="language-chips">
-              ${languagePresets.map((item) => `<button type="button" class="chip" data-value="${item.value}">${esc(item.label)}</button>`).join("")}
+            <div class="field-block" id="runtime-block">
+              <label>How long is movie night?</label>
+              <div class="chips single" id="runtime-chips">
+                ${presetChips(runtimePresets, (item) => `data-min="${item.min}" data-max="${item.max}"`)}
+              </div>
+            </div>
+
+            <div class="field-block">
+              <label>Language</label>
+              <div class="chips" id="language-chips">
+                ${languagePresets.map((item) => `<button type="button" class="chip" data-value="${item.value}">${esc(item.label)}</button>`).join("")}
+              </div>
+            </div>
+
+            <div class="field-block">
+              <label>Extras</label>
+              <div class="chips" id="extra-chips">
+                <button type="button" class="chip" id="favor-popular-chip">Favor popular</button>
+                <button type="button" class="chip" id="include-kids-chip">Include children's</button>
+              </div>
             </div>
           </div>
         </details>
@@ -967,8 +1248,16 @@ async function renderCreateScreen() {
     });
   });
 
-  // A vibe bulk-sets the fine-tune chips underneath.
   let pendingVibeGenres = null;
+  const favorPopularChip = document.getElementById("favor-popular-chip");
+  const includeKidsChip = document.getElementById("include-kids-chip");
+
+  const setEraByLabel = (label) => {
+    document.querySelectorAll("#era-chips .chip").forEach((chip) => {
+      chip.classList.toggle("selected", chip.textContent.trim() === label);
+    });
+  };
+
   const applyVibe = (vibe) => {
     pendingVibeGenres = vibe.genres;
     document.querySelectorAll("#genre-chips .chip").forEach((chip) => {
@@ -977,9 +1266,9 @@ async function renderCreateScreen() {
     document.querySelectorAll("#rating-chips .chip").forEach((chip) => {
       chip.classList.toggle("selected", Number(chip.dataset.min) === vibe.rating);
     });
-    document.querySelectorAll("#era-chips .chip").forEach((chip) => {
-      chip.classList.toggle("selected", chip.textContent.trim() === vibe.era);
-    });
+    setEraByLabel(vibe.era);
+    favorPopularChip?.classList.toggle("selected", !!vibe.favorPopular);
+    includeKidsChip?.classList.toggle("selected", !!vibe.includeKids);
   };
 
   document.getElementById("vibe-chips").addEventListener("click", (event) => {
@@ -1004,12 +1293,42 @@ async function renderCreateScreen() {
     });
   };
 
+  // Eras are multi-select; "Any time" is exclusive with specific decades.
+  document.getElementById("era-chips").addEventListener("click", (event) => {
+    const chip = event.target.closest(".chip");
+    if (!chip) return;
+    const chips = [...document.querySelectorAll("#era-chips .chip")];
+    if (chip.dataset.any === "1") {
+      chips.forEach((el) => el.classList.toggle("selected", el === chip));
+      return;
+    }
+    chips.filter((el) => el.dataset.any === "1").forEach((el) => el.classList.remove("selected"));
+    chip.classList.toggle("selected");
+    if (!chips.some((el) => el.classList.contains("selected"))) {
+      chips.find((el) => el.dataset.any === "1")?.classList.add("selected");
+    }
+  });
+
   toggleMulti("provider-chips");
   toggleMulti("genre-chips");
   toggleMulti("language-chips");
-  selectOne("era-chips");
+  selectOne("media-chips");
   selectOne("rating-chips");
   selectOne("runtime-chips");
+
+  favorPopularChip?.addEventListener("click", () => favorPopularChip.classList.toggle("selected"));
+  includeKidsChip?.addEventListener("click", () => includeKidsChip.classList.toggle("selected"));
+
+  const syncRuntimeVisibility = () => {
+    const media = document.querySelector("#media-chips .chip.selected")?.dataset.value || "movie";
+    const block = document.getElementById("runtime-block");
+    if (block) block.hidden = media === "tv";
+  };
+  document.getElementById("media-chips").addEventListener("click", () => {
+    syncRuntimeVisibility();
+    loadGenresForMedia();
+  });
+  syncRuntimeVisibility();
 
   (state.user.providers || []).forEach((code) => {
     document.querySelector(`#provider-chips .chip[data-value="${code}"]`)?.classList.add("selected");
@@ -1024,9 +1343,15 @@ async function renderCreateScreen() {
     event.preventDefault();
     const selected = (id) =>
       [...document.querySelectorAll(`#${id} .chip.selected`)].map((chip) => chip.dataset.value);
-    const era = document.querySelector("#era-chips .chip.selected");
+    const eras = [...document.querySelectorAll("#era-chips .chip.selected")];
     const rating = document.querySelector("#rating-chips .chip.selected");
     const runtime = document.querySelector("#runtime-chips .chip.selected");
+    const mediaType = document.querySelector("#media-chips .chip.selected")?.dataset.value || "movie";
+
+    const releaseYearRanges = eras.map((era) => [
+      Number(era.dataset.from || 1950),
+      Number(era.dataset.to || currentYear),
+    ]);
 
     const values = {
       mode: document.querySelector(".mode-option.selected")?.dataset.mode || "first_match",
@@ -1034,8 +1359,12 @@ async function renderCreateScreen() {
       genres: selected("genre-chips"),
       languages: selected("language-chips"),
       userScoreRange: [Number(rating?.dataset.min || 0), 10],
-      releaseYearRange: [Number(era?.dataset.from || 1950), Number(era?.dataset.to || currentYear)],
+      releaseYearRanges,
+      releaseYearRange: releaseYearRanges[0] || [1950, currentYear],
       runtimeRange: [Number(runtime?.dataset.min || 0), Number(runtime?.dataset.max || 400)],
+      mediaType,
+      includeKids: includeKidsChip?.classList.contains("selected") || false,
+      favorPopular: favorPopularChip?.classList.contains("selected") || false,
     };
 
     const submit = document.getElementById("create-submit");
@@ -1048,11 +1377,25 @@ async function renderCreateScreen() {
     }
   });
 
-  try {
-    genresCache = genresCache || (await tmdb.genres());
+  let genresCacheMovie = null;
+  let genresCacheTv = null;
+
+  async function loadGenresForMedia() {
+    const media = document.querySelector("#media-chips .chip.selected")?.dataset.value || "movie";
     const chipContainer = document.getElementById("genre-chips");
-    if (chipContainer) {
-      chipContainer.innerHTML = genresCache
+    if (!chipContainer) return;
+
+    const genreMedia = media === "tv" ? "tv" : "movie";
+    chipContainer.innerHTML = `<span class="muted">Loading genres…</span>`;
+    try {
+      if (genreMedia === "tv") {
+        genresCacheTv = genresCacheTv || (await tmdb.genres("tv"));
+      } else {
+        genresCacheMovie = genresCacheMovie || genresCache || (await tmdb.genres("movie"));
+        genresCache = genresCacheMovie;
+      }
+      const list = genreMedia === "tv" ? genresCacheTv : genresCacheMovie;
+      chipContainer.innerHTML = list
         .map((g) => `<button type="button" class="chip" data-value="${g.id}">${esc(g.name)}</button>`)
         .join("");
       if (pendingVibeGenres?.length) {
@@ -1060,11 +1403,12 @@ async function renderCreateScreen() {
           chip.classList.toggle("selected", pendingVibeGenres.includes(Number(chip.dataset.value)));
         });
       }
+    } catch {
+      chipContainer.innerHTML = `<span class="muted">Genres unavailable</span>`;
     }
-  } catch {
-    const chipContainer = document.getElementById("genre-chips");
-    if (chipContainer) chipContainer.innerHTML = `<span class="muted">Genres unavailable</span>`;
   }
+
+  loadGenresForMedia();
 }
 
 // ---------- lobby ----------
@@ -1113,6 +1457,11 @@ function renderLobbyScreen() {
         <div id="player-list">${playerListHtml()}</div>
       </section>
 
+      <section class="card list-card" id="lobby-invite-section">
+        <h2>Invite friends</h2>
+        <div id="lobby-invites"></div>
+      </section>
+
       <button class="btn btn-primary btn-big" id="ready-button" ${me?.ready_at ? "disabled" : ""}>
         ${me?.ready_at ? "Waiting for others…" : "I'm ready — start swiping"}
       </button>
@@ -1126,6 +1475,7 @@ function renderLobbyScreen() {
     </div>`;
 
   bindBrandHome();
+  renderLobbyInvites();
 
   document.getElementById("copy-link").addEventListener("click", async () => {
     await navigator.clipboard.writeText(shareLink());
@@ -1140,7 +1490,7 @@ function renderLobbyScreen() {
   document.getElementById("ready-button").addEventListener("click", () => {
     if (state.game.players.length === 1) {
       const goSolo = confirm(
-        "You're the only one here! It's more fun with friends — share the invite link so they can join. Continue solo anyway?"
+        "You're the only one here! It's more fun with friends — invite them in-app or share the link. Continue solo anyway?"
       );
       if (!goSolo) return;
     }
@@ -1148,6 +1498,45 @@ function renderLobbyScreen() {
   });
 
   document.getElementById("leave-game").addEventListener("click", leaveGame);
+}
+
+function renderLobbyInvites() {
+  const container = document.getElementById("lobby-invites");
+  const section = document.getElementById("lobby-invite-section");
+  if (!container || !section || !state.game) return;
+
+  const playerIds = new Set((state.game.players || []).map((p) => p.user?.id));
+  const invitableFriends = state.friends.filter((f) => !playerIds.has(f.id));
+  const pendingIds = new Set(outgoingInvitesForGame(state.game.id).map((i) => i.invitee?.id));
+
+  if (state.friends.length === 0) {
+    container.innerHTML = `<p class="muted">No past co-players yet. Share the code above, or play once and invite them next time.</p>`;
+    return;
+  }
+
+  if (invitableFriends.length === 0) {
+    container.innerHTML = `<p class="muted">Everyone on your friends list is already in this game.</p>`;
+    return;
+  }
+
+  container.innerHTML = invitableFriends.map((friend) => `
+    <div class="friend-row">
+      <div class="friend-info">
+        <strong>${esc(friend.username || "Player")}</strong>
+        ${pendingIds.has(friend.id) ? `<span class="muted">Invite pending</span>` : ""}
+      </div>
+      <button class="btn btn-secondary btn-small" data-invite="${friend.id}" ${pendingIds.has(friend.id) ? "disabled" : ""}>
+        ${pendingIds.has(friend.id) ? "Invited" : "Invite"}
+      </button>
+    </div>`).join("");
+
+  container.querySelectorAll("[data-invite]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      const invite = await inviteFriendToGame(Number(btn.dataset.invite), state.game.id);
+      if (!invite) btn.disabled = false;
+    });
+  });
 }
 
 // ---------- movie details ----------
@@ -1286,7 +1675,7 @@ async function fillCardDetails(card, movie) {
   bindTrailerButtons(panel);
 }
 
-async function openMovieModal(movieId) {
+async function openMovieModal(movieId, mediaType) {
   let overlay = document.getElementById("movie-modal");
   if (!overlay) {
     overlay = document.createElement("div");
@@ -1302,10 +1691,10 @@ async function openMovieModal(movieId) {
     if (event.target === overlay) close();
   }, { once: true });
 
-  const movie = await fetchMovieSummary(movieId);
+  const movie = await fetchMovieSummary(movieId, mediaType);
   if (!overlay.isConnected || overlay.hidden) return;
   if (!movie) {
-    overlay.innerHTML = `<div class="modal-sheet"><p>Couldn't load that movie.</p><button class="btn btn-ghost" id="modal-close">Close</button></div>`;
+    overlay.innerHTML = `<div class="modal-sheet"><p>Couldn't load that title.</p><button class="btn btn-ghost" id="modal-close">Close</button></div>`;
     overlay.querySelector("#modal-close").addEventListener("click", close);
     return;
   }
@@ -1324,7 +1713,7 @@ async function openMovieModal(movieId) {
 
 function bindResultCards(root) {
   root.querySelectorAll(".result-card[data-id]").forEach((card) => {
-    card.addEventListener("click", () => openMovieModal(Number(card.dataset.id)));
+    card.addEventListener("click", () => openMovieModal(Number(card.dataset.id), card.dataset.media));
   });
 }
 
@@ -1403,8 +1792,9 @@ async function showMatchesModal() {
     const movie = await fetchMovieSummary(id);
     if (!movie) return "";
     const poster = posterUrl(movie.poster_path, "w342");
+    const media = movie.media_type || "movie";
     return `
-      <button type="button" class="result-card" data-id="${id}">
+      <button type="button" class="result-card" data-id="${id}" data-media="${media}">
         ${poster ? `<img src="${poster}" alt="${esc(movie.title)}">` : `<div class="poster-missing">${esc(movie.title)}</div>`}
         <div class="result-info"><strong>${esc(movie.title)}</strong></div>
       </button>`;
@@ -1416,7 +1806,7 @@ async function showMatchesModal() {
     grid.querySelectorAll(".result-card[data-id]").forEach((card) => {
       card.addEventListener("click", () => {
         close();
-        openMovieModal(Number(card.dataset.id));
+        openMovieModal(Number(card.dataset.id), card.dataset.media);
       });
     });
   }
@@ -1601,8 +1991,10 @@ function movieCardHtml(movie) {
   const year = movie.release_date ? movie.release_date.slice(0, 4) : "";
   const rating = movie.vote_average ? movie.vote_average.toFixed(1) : "–";
   const poster = posterUrl(movie.poster_path);
+  const media = movie.media_type || "movie";
+  const kind = media === "tv" ? "TV" : "";
   return `
-    <div class="movie-card" data-id="${movie.id}">
+    <div class="movie-card" data-id="${movie.id}" data-media="${media}">
       <div class="stamp stamp-like">LIKE</div>
       <div class="stamp stamp-nope">NOPE</div>
       ${poster
@@ -1613,7 +2005,7 @@ function movieCardHtml(movie) {
           <strong>${esc(movie.title)}</strong>
           <span class="rating">★ ${rating}</span>
         </div>
-        <span class="muted">${year}</span>
+        <span class="muted">${[year, kind].filter(Boolean).join(" · ")}</span>
       </div>
       <div class="card-details">
         <h3>${esc(movie.title)} <span class="muted">${year}</span></h3>
@@ -1926,8 +2318,9 @@ async function renderResultsScreen() {
     if (!movie) return "";
     const poster = posterUrl(movie.poster_path, "w342");
     const year = movie.release_date ? movie.release_date.slice(0, 4) : "";
+    const media = movie.media_type || "movie";
     return `
-      <button type="button" class="result-card" data-id="${id}">
+      <button type="button" class="result-card" data-id="${id}" data-media="${media}">
         ${poster ? `<img src="${poster}" alt="${esc(movie.title)}">` : `<div class="poster-missing">${esc(movie.title)}</div>`}
         <div class="result-info">
           <strong>${esc(movie.title)}</strong>
@@ -1946,16 +2339,26 @@ async function renderResultsScreen() {
 
 const movieSummaryCache = new Map();
 
-async function fetchMovieSummary(id) {
-  if (movieSummaryCache.has(id)) return movieSummaryCache.get(id);
-  try {
-    const movie = await tmdb.movie(id);
-    movieSummaryCache.set(id, movie);
-    return movie;
-  } catch {
-    movieSummaryCache.set(id, null);
-    return null;
+async function fetchMovieSummary(id, mediaType) {
+  const hinted = mediaType || state.movies?.find((m) => m.id === id)?.media_type;
+  const order = hinted === "tv" ? ["tv", "movie"] : hinted === "movie" ? ["movie"] : ["movie", "tv"];
+
+  for (const type of order) {
+    const cacheKey = `${type}:${id}`;
+    if (movieSummaryCache.has(cacheKey)) {
+      const cached = movieSummaryCache.get(cacheKey);
+      if (cached) return cached;
+      continue;
+    }
+    try {
+      const movie = await tmdb.details(id, type);
+      movieSummaryCache.set(cacheKey, movie);
+      return movie;
+    } catch {
+      movieSummaryCache.set(cacheKey, null);
+    }
   }
+  return null;
 }
 
 function matchedIdsFor(game) {
@@ -2077,8 +2480,9 @@ async function renderHistoryDetail(container, games, game, tab) {
       ? (everyone ? "⭐ Everyone liked this" : `Liked by ${likers.map(esc).join(", ")}`)
       : `${year} · ★ ${movie.vote_average ? movie.vote_average.toFixed(1) : "–"}`;
     const poster = posterUrl(movie.poster_path, "w342");
+    const media = movie.media_type || "movie";
     return `
-      <button type="button" class="result-card" data-id="${id}">
+      <button type="button" class="result-card" data-id="${id}" data-media="${media}">
         ${poster ? `<img src="${poster}" alt="${esc(movie.title)}">` : `<div class="poster-missing">${esc(movie.title)}</div>`}
         <div class="result-info">
           <strong>${esc(movie.title)}</strong>
@@ -2094,3 +2498,15 @@ async function renderHistoryDetail(container, games, game, tab) {
 }
 
 boot();
+
+document.getElementById("invite-accept")?.addEventListener("click", () => {
+  const popup = document.getElementById("invite-popup");
+  const id = Number(popup?.dataset.inviteId);
+  if (id) acceptInvite(id);
+});
+
+document.getElementById("invite-decline")?.addEventListener("click", () => {
+  const popup = document.getElementById("invite-popup");
+  const id = Number(popup?.dataset.inviteId);
+  if (id) declineInvite(id);
+});

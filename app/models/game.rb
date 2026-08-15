@@ -1,6 +1,8 @@
 class Game < ApplicationRecord
   belongs_to :user
   has_many :players
+  has_many :game_invites, dependent: :destroy
+
 
   def endless?
     mode == "endless"

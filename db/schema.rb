@@ -10,9 +10,23 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_08_14_180000) do
+ActiveRecord::Schema[7.1].define(version: 2026_08_15_020000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "plpgsql"
+
+  create_table "game_invites", force: :cascade do |t|
+    t.bigint "game_id", null: false
+    t.bigint "inviter_id", null: false
+    t.bigint "invitee_id", null: false
+    t.string "status", default: "pending", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["game_id", "invitee_id", "status"], name: "index_game_invites_on_game_id_and_invitee_id_and_status"
+    t.index ["game_id"], name: "index_game_invites_on_game_id"
+    t.index ["invitee_id", "status"], name: "index_game_invites_on_invitee_id_and_status"
+    t.index ["invitee_id"], name: "index_game_invites_on_invitee_id"
+    t.index ["inviter_id"], name: "index_game_invites_on_inviter_id"
+  end
 
   create_table "games", force: :cascade do |t|
     t.string "entry_code"
@@ -57,6 +71,9 @@ ActiveRecord::Schema[7.1].define(version: 2026_08_14_180000) do
     t.index ["email"], name: "index_users_on_email", unique: true, where: "(email IS NOT NULL)"
   end
 
+  add_foreign_key "game_invites", "games"
+  add_foreign_key "game_invites", "users", column: "invitee_id"
+  add_foreign_key "game_invites", "users", column: "inviter_id"
   add_foreign_key "games", "users"
   add_foreign_key "players", "games"
   add_foreign_key "players", "users"

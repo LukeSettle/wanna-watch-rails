@@ -11,6 +11,8 @@ class User < ApplicationRecord
 
   has_many :players
   has_many :owned_games, class_name: "Game", foreign_key: "user_id"
+  has_many :sent_invites, class_name: "GameInvite", foreign_key: "inviter_id", dependent: :destroy
+  has_many :received_invites, class_name: "GameInvite", foreign_key: "invitee_id", dependent: :destroy
 
   has_many :games, ->(user) {
     unscope(where: :user_id).where(
@@ -20,6 +22,11 @@ class User < ApplicationRecord
   }, class_name: "Game"
 
   def friends
-    games.includes(:players).map { |game| game.players.map(&:user) }.flatten.uniq
+    games.includes(players: :user)
+         .flat_map { |game| game.players.map(&:user) }
+         .compact
+         .uniq
+         .reject { |user| user.id == id }
   end
 end
+

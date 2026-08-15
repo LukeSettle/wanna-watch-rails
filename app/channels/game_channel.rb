@@ -3,7 +3,7 @@ class GameChannel < ApplicationCable::Channel
   def subscribed
     stream_from game_stream
     @game = find_game
-    @game.players << Player.create(user: current_user)
+    @game.players.create!(user: current_user) unless @game.players.exists?(user_id: current_user.id)
 
     ActionCable.server.broadcast(
       game_stream,

@@ -33,7 +33,7 @@ body.lock-scroll #app {
   overflow: hidden;
 }
 
-button, .chip, .game-row, .tab {
+button, .chip, .game-row-main, .game-remove, .tab {
   touch-action: manipulation;
 }
 
@@ -149,6 +149,18 @@ body {
 .form-card { display: flex; flex-direction: column; gap: 10px; }
 .form-card label { font-weight: 600; font-size: 0.95rem; }
 
+.create-screen .create-lede { margin: 0 0 14px; }
+.create-screen .card { padding: 14px 16px; }
+.create-screen .form-card { gap: 16px; }
+.create-screen .field-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.create-screen .fine-tune-body { gap: 0; }
+.create-screen .fine-tune-body .field-block { margin-top: 16px; }
+.create-screen .fine-tune-body .field-block:first-child { margin-top: 0; }
+
 input[type="text"], input:not([type]), input[type="range"], select {
   width: 100%;
 }
@@ -240,19 +252,19 @@ select option { color: var(--ink); }
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
   text-align: left;
   background: rgba(255, 255, 255, 0.06);
   border: 2px solid rgba(255, 255, 255, 0.18);
   border-radius: 12px;
   color: var(--text);
-  padding: 12px;
+  padding: 10px 12px;
   cursor: pointer;
   font: inherit;
 }
 
 .mode-option span {
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   color: var(--muted);
   line-height: 1.35;
 }
@@ -268,8 +280,7 @@ select option { color: var(--ink); }
   padding: 2px 0;
 }
 
-.fine-tune[open] summary { margin-bottom: 12px; }
-.fine-tune .form-card label { margin-top: 6px; }
+.fine-tune[open] summary { margin-bottom: 14px; }
 
 .endless-tag {
   background: rgba(62, 198, 255, 0.16);
@@ -389,6 +400,12 @@ select option { color: var(--ink); }
   to { transform: scale(1); opacity: 1; }
 }
 
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .chips.single .chip.selected {
   background: var(--accent-2);
   border-color: var(--accent-2);
@@ -417,19 +434,52 @@ select option { color: var(--ink); }
 
 .game-row {
   display: flex;
+  align-items: stretch;
+  gap: 6px;
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.game-row-main {
+  display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 10px;
   color: var(--text);
   padding: 12px;
-  margin-bottom: 8px;
   cursor: pointer;
   font-size: 0.95rem;
   text-align: left;
+}
+
+.game-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 44px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+}
+
+.game-remove:hover,
+.game-remove:focus-visible {
+  color: #f07178;
+  border-color: rgba(240, 113, 120, 0.45);
+}
+
+.game-remove:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .game-code { font-weight: 800; letter-spacing: 2px; }
@@ -835,6 +885,90 @@ select option { color: var(--ink); }
   z-index: 50;
   max-width: 90vw;
   text-align: center;
+}
+
+.friend-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  margin-bottom: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.friend-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.friend-info strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.friend-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.btn-small {
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.invite-popup {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 18px 16px;
+  background: rgba(8, 6, 16, 0.55);
+}
+
+.invite-popup[hidden] { display: none; }
+
+.invite-popup-card {
+  width: min(420px, 100%);
+  background: #1f1830;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  padding: 18px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  animation: invite-in 0.22s ease-out;
+}
+
+.invite-popup-text {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.invite-popup-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.invite-popup-actions .btn { flex: 1; }
+
+@keyframes invite-in {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .hero { margin-top: 8px; }

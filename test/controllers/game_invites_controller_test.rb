@@ -56,13 +56,14 @@ class GameInvitesControllerTest < ActionDispatch::IntegrationTest
     assert_not Player.exists?(user: @invitee, game: @game)
   end
 
-  test "cannot invite yourself" do
-    post game_invites_url, params: {
-      inviter_id: @inviter.id,
-      invitee_id: @inviter.id,
-      game_id: @game.id
-    }, as: :json
+  test "nudge is only allowed for the inviter" do
+    invite = GameInvite.create!(game: @game, inviter: @inviter, invitee: @invitee)
 
-    assert_response :unprocessable_entity
+    post nudge_game_invite_url(invite), params: { user_id: @invitee.id }, as: :json
+    assert_response :forbidden
+
+    post nudge_game_invite_url(invite), params: { user_id: @inviter.id }, as: :json
+    assert_response :success
+    assert_equal true, JSON.parse(response.body)["nudged"]
   end
 end

@@ -14,19 +14,25 @@
 # never repeat.
 class DeckBuilder
   DECK_SIZE = 20
+  CURATE_DECK_MAX = 40
   MAX_SEEDS = 6
   RECENT_GAMES_PER_PLAYER = 10
   RECENT_DEALT_GAMES = 15
   DOCUMENTARY_GENRE = 99
+  FAMILY_GENRE = 10751
+  KIDS_GENRE = 10762
 
   def initialize(game)
     @game = game
     @query_params = parse_query_params
-    @excluded_ids = excluded_movie_ids
+    @excluded_keys = excluded_media_keys
     @rng = Random.new(game.id * 31 + game.load_more_count)
   end
 
   def build
+    curated = curated_candidates
+    return curated.first(CURATE_DECK_MAX) if curated.any?
+
     recs = recommendation_candidates
     plan = if favor_popular?
       [
@@ -58,8 +64,37 @@ class DeckBuilder
     {}
   end
 
+  # Explicit title list for "narrow it down" sessions — re-swipe shared likes.
+  def curated_keys
+    @curated_keys ||= MediaKey.normalize_list(@query_params["ww_curate_keys"].to_s.split(/[,\s]+/))
+  end
+
+  def curated_candidates
+    return [] if curated_keys.empty?
+
+    curated_keys.filter_map do |key|
+      media, id = MediaKey.parse(key)
+      next if id <= 0
+
+      item = TmdbClient.details(id, media: media)
+      next if item.blank? || item["id"].blank?
+      next if item["poster_path"].blank? || item["adult"]
+
+      normalize(item, media)
+    end.shuffle(random: @rng)
+  end
+
   def favor_popular?
     ActiveModel::Type::Boolean.new.cast(@query_params["favor_popular"])
+  end
+
+  def exclude_kids?
+    return false if ActiveModel::Type::Boolean.new.cast(@query_params["include_kids"])
+    return true if ActiveModel::Type::Boolean.new.cast(@query_params["exclude_kids"])
+
+    # Legacy games relied on without_genres alone.
+    without = @query_params["without_genres"].to_s.split("|").map(&:to_i)
+    without.include?(FAMILY_GENRE) || without.include?(KIDS_GENRE)
   end
 
   def media_types
@@ -72,13 +107,13 @@ class DeckBuilder
 
   # More like-history means a bigger personalized share (max half the deck).
   def personalized_target
-    [seed_movie_ids.size * 2, DECK_SIZE / 2].min
+    [seed_refs.size * 2, DECK_SIZE / 2].min
   end
 
   # Players' liked titles, most-shared first, rotated per round so
   # "keep playing" seeds from different favorites.
-  def seed_movie_ids
-    @seed_movie_ids ||= begin
+  def seed_refs
+    @seed_refs ||= begin
       like_counts = Hash.new(0)
       @game.players.map(&:user_id).uniq.each do |user_id|
         recent_likes = Player.where(user_id: user_id)
@@ -86,10 +121,10 @@ class DeckBuilder
                              .limit(RECENT_GAMES_PER_PLAYER)
                              .pluck(:liked_movie_ids)
                              .flatten
-        recent_likes.uniq.each { |movie_id| like_counts[movie_id] += 1 }
+        MediaKey.normalize_list(recent_likes).uniq.each { |key| like_counts[key] += 1 }
       end
 
-      like_counts.sort_by { |movie_id, count| [-count, -movie_id] }
+      like_counts.sort_by { |key, count| [-count, key] }
                  .map(&:first)
                  .rotate(@game.load_more_count * MAX_SEEDS)
                  .first(MAX_SEEDS)
@@ -100,18 +135,19 @@ class DeckBuilder
     scores = Hash.new(0)
     movies = {}
 
-    seed_movie_ids.each do |seed_id|
-      media_types.each do |media|
-        results = media == "tv" ? TmdbClient.tv_recommendations(seed_id) : TmdbClient.recommendations(seed_id)
-        results.each do |item|
-          movie = normalize(item, media)
-          next unless suitable?(movie)
-          next unless available_on_providers?(movie)
-          next if movie["vote_count"].to_i < 150 || movie["vote_average"].to_f < 6.2
+    seed_refs.each do |seed_key|
+      media, seed_id = MediaKey.parse(seed_key)
+      next if seed_id <= 0
 
-          scores[deck_key(movie)] += 1
-          movies[deck_key(movie)] = movie
-        end
+      results = media == "tv" ? TmdbClient.tv_recommendations(seed_id) : TmdbClient.recommendations(seed_id)
+      results.each do |item|
+        movie = normalize(item, media)
+        next unless suitable?(movie)
+        next unless available_on_providers?(movie)
+        next if movie["vote_count"].to_i < 150 || movie["vote_average"].to_f < 6.2
+
+        scores[deck_key(movie)] += 1
+        movies[deck_key(movie)] = movie
       end
     end
 
@@ -188,12 +224,23 @@ class DeckBuilder
       params["with_runtime.lte"] = @query_params["with_runtime.lte"]
     end
 
+    apply_kids_certification!(params, media)
+
     # A chosen language should override the default US-origin bias.
     if @query_params["with_original_language"].blank?
       params["with_origin_country"] = @query_params["with_origin_country"]
     end
 
     params.compact
+  end
+
+  # Prefer certification over genre alone for family-night filtering.
+  # US: exclude G / TV-Y / TV-Y7 / TV-G by requiring PG / TV-PG or higher.
+  def apply_kids_certification!(params, media)
+    return unless exclude_kids?
+
+    params["certification_country"] = "US"
+    params["certification.gte"] = media == "tv" ? "TV-PG" : "PG"
   end
 
   def date_keys(media)
@@ -241,7 +288,7 @@ class DeckBuilder
   end
 
   def deck_key(movie)
-    "#{movie['media_type']}:#{movie['id']}"
+    MediaKey.for(movie)
   end
 
   # Different page per pool, stable within a round, varies per game and round.
@@ -313,7 +360,7 @@ class DeckBuilder
 
   def suitable?(movie)
     return false if movie["poster_path"].blank? || movie["adult"]
-    return false if @excluded_ids.include?(movie["id"])
+    return false if @excluded_keys.include?(deck_key(movie))
     return false if movie["release_date"].blank? || movie["release_date"] > Date.current.iso8601
 
     # Documentaries rate high on TMDB but are rarely movie-night picks;
@@ -325,6 +372,12 @@ class DeckBuilder
 
     excluded_genres = @query_params["without_genres"].to_s.split("|").map(&:to_i)
     return false if excluded_genres.any? && (movie["genre_ids"].to_a & excluded_genres).any?
+
+    # Supplement certification discover filters for recommendations / legacy.
+    if exclude_kids?
+      kids_genres = [FAMILY_GENRE, KIDS_GENRE]
+      return false if (movie["genre_ids"].to_a & kids_genres).any?
+    end
 
     matches_filters?(movie)
   end
@@ -349,7 +402,7 @@ class DeckBuilder
 
   # Anything the players have liked or swiped before, plus anything dealt in
   # their recent games (covers abandoned rounds), never comes back.
-  def excluded_movie_ids
+  def excluded_media_keys
     user_ids = @game.players.map(&:user_id).uniq
     swiped = Player.where(user_id: user_ids)
                    .pluck(:liked_movie_ids, :seen_movie_ids)
@@ -361,6 +414,6 @@ class DeckBuilder
                          .pluck(:dealt_movie_ids)
                          .flatten
 
-    (@game.dealt_movie_ids.to_a + swiped + recently_dealt).to_set
+    MediaKey.normalize_list(@game.dealt_movie_ids.to_a + swiped + recently_dealt).to_set
   end
 end

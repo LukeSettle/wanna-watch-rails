@@ -59,10 +59,13 @@ class Game < ApplicationRecord
 
   def player_finished(user, liked_movie_ids, seen_movie_ids = [])
     player = players.find_by(user: user)
+    liked = MediaKey.normalize_list(liked_movie_ids)
+    seen = MediaKey.normalize_list(seen_movie_ids)
     player.update(
       finished_at: DateTime.current,
-      liked_movie_ids: liked_movie_ids,
-      seen_movie_ids: (player.seen_movie_ids.to_a + seen_movie_ids.to_a).uniq
+      liked_movie_ids: liked,
+      seen_movie_ids: (player.seen_movie_ids.to_a + seen).uniq
     )
   end
 end
+

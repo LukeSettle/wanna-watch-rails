@@ -13,6 +13,10 @@ const state = {
   noMoreMovies: false,
   finishedSent: false,
   fetchingMovies: false,
+  lastSwipe: null,      // one-level undo: { movie, liked }
+  finalMatchKey: null,
+  libraryTab: "matches", // matches | likes | friends
+  libraryFriendId: null,
 };
 
 let cable = null;
@@ -75,6 +79,49 @@ function swipedIdsKey() {
   return storageKey(`swiped_${state.game.id}`);
 }
 
+function titleKey(movieOrId, mediaType) {
+  if (movieOrId && typeof movieOrId === "object") {
+    return mediaKey(movieOrId.id, movieOrId.media_type || mediaType || "movie");
+  }
+  return mediaKey(movieOrId, mediaType || "movie");
+}
+
+function isGuest() {
+  return Boolean(state.user) && !state.user.email;
+}
+
+function accountNudgeHtml(context = "home") {
+  if (!isGuest()) return "";
+  const copy = {
+    home: "Friends, invites, and history stick better with an account — guests can still play.",
+    history: "Create a login so liked movies and matches stay with you on any device.",
+    lobby: "Accounts make friend invites easier. Guests can keep swiping.",
+  };
+  return `
+    <section class="card account-card account-nudge">
+      <div>
+        <strong>Playing as a guest</strong>
+        <p class="muted">${copy[context] || copy.home}</p>
+      </div>
+      <button type="button" class="btn btn-secondary" data-save-account>Create login</button>
+    </section>`;
+}
+
+function bindAccountNudge(root = document) {
+  root.querySelectorAll("[data-save-account]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (state.game && !confirm("Leave this game to create a login?")) return;
+      if (state.game) {
+        cable?.unsubscribe(gameChannelParams());
+        state.game = null;
+        state.movies = [];
+      }
+      state.view = "register";
+      render();
+    });
+  });
+}
+
 // ---------- boot ----------
 
 async function boot() {
@@ -104,6 +151,17 @@ async function boot() {
     } catch {
       state.user = null;
     }
+  }
+
+  if (await handleShopReturn()) {
+    if (state.user?.username) {
+      connectCable();
+      cable?.subscribe({ channel: "UserGamesChannel" });
+    } else {
+      state.view = "name";
+    }
+    render();
+    return;
   }
 
   if (state.user?.username) {
@@ -328,10 +386,11 @@ function handleSocketMessage(data) {
       const game = JSON.parse(msg.game);
       if (state.game && game.id === state.game.id) applyGameUpdate(game);
     }
+    const key = msg.media_key || titleKey(msg.movie_id, msg.media_type);
     if (isFirstMatch()) {
-      state.finalMatchId = msg.movie_id;
+      state.finalMatchKey = key;
     } else {
-      showMatchBanner(msg.movie_id);
+      showMatchBanner(key);
     }
     render();
     return;
@@ -365,7 +424,7 @@ function isContinuous() {
 }
 
 function matchedIdsOf(game) {
-  const lists = (game?.players || []).map((p) => p.liked_movie_ids || []);
+  const lists = (game?.players || []).map((p) => normalizeMediaKeyList(p.liked_movie_ids || []));
   if (lists.length < 2) return [];
   return lists.reduce((a, b) => a.filter((id) => b.includes(id)));
 }
@@ -436,6 +495,8 @@ async function startGame(game) {
   state.serverMessages = [];
   state.noMoreMovies = false;
   state.finishedSent = false;
+  state.lastSwipe = null;
+  state.finalMatchKey = null;
   connectCable();
   cable.subscribe(gameChannelParams());
   render();
@@ -543,13 +604,14 @@ async function fetchMovies() {
 
   try {
     const { movies: results } = await backend.gameDeck(state.game.id, state.user.id);
-    const known = new Set(state.movies.map((m) => m.id));
-    const swiped = new Set(loadJSON(swipedIdsKey(), []));
+    const known = new Set(state.movies.map((m) => titleKey(m)));
+    const swiped = new Set(normalizeMediaKeyList(loadJSON(swipedIdsKey(), [])));
     let added = 0;
     results.forEach((movie) => {
-      if (known.has(movie.id)) return;
-      known.add(movie.id);
-      state.movies.push({ ...movie, hidden: swiped.has(movie.id) });
+      const key = titleKey(movie);
+      if (known.has(key)) return;
+      known.add(key);
+      state.movies.push({ ...movie, hidden: swiped.has(key) });
       added += 1;
     });
     if (added === 0 && unswipedMovies().length === 0) {
@@ -565,12 +627,14 @@ async function fetchMovies() {
 }
 
 // Continuous modes: report each swipe right away; queue and retry if offline.
-function reportSwipe(movieId, liked) {
-  backend.swipe(state.game.id, state.user.id, movieId, liked)
+function reportSwipe(movie, liked) {
+  const mediaType = movie.media_type || "movie";
+  backend.swipe(state.game.id, state.user.id, movie.id, liked, mediaType)
     .then(async (res) => {
       if (!res.matched) return;
+      const key = res.media_key || titleKey(movie);
       if (isFirstMatch()) {
-        state.finalMatchId = movieId;
+        state.finalMatchKey = key;
         try {
           applyGameUpdate(await backend.findGameByEntryCode(state.game.entry_code));
         } catch {
@@ -578,12 +642,17 @@ function reportSwipe(movieId, liked) {
         }
         render();
       } else {
-        showMatchBanner(movieId);
+        showMatchBanner(key);
       }
     })
     .catch(() => {
       const queue = loadJSON(storageKey("pending_swipes"), []);
-      queue.push({ gameId: state.game.id, movieId, liked });
+      queue.push({
+        gameId: state.game.id,
+        movieId: movie.id,
+        mediaType,
+        liked,
+      });
       saveJSON(storageKey("pending_swipes"), queue);
     });
 }
@@ -598,7 +667,13 @@ async function flushPendingSwipes() {
   const remaining = [];
   for (const swipe of queue) {
     try {
-      await backend.swipe(swipe.gameId, state.user.id, swipe.movieId, swipe.liked);
+      await backend.swipe(
+        swipe.gameId,
+        state.user.id,
+        swipe.movieId,
+        swipe.liked,
+        swipe.mediaType || "movie"
+      );
     } catch {
       remaining.push(swipe);
     }
@@ -613,19 +688,23 @@ function unswipedMovies() {
 
 function recordSwipe(movie, liked, { deferFinish } = {}) {
   movie.hidden = true;
+  const key = titleKey(movie);
 
-  const swiped = new Set(loadJSON(swipedIdsKey(), []));
-  swiped.add(movie.id);
+  const swiped = new Set(normalizeMediaKeyList(loadJSON(swipedIdsKey(), [])));
+  swiped.add(key);
   saveJSON(swipedIdsKey(), [...swiped]);
 
   if (liked) {
-    const liked_ids = new Set(likedMovieIds());
-    liked_ids.add(movie.id);
-    saveJSON(likedIdsKey(), [...liked_ids]);
+    const likedIds = new Set(normalizeMediaKeyList(likedMovieIds()));
+    likedIds.add(key);
+    saveJSON(likedIdsKey(), [...likedIds]);
   }
 
+  state.lastSwipe = { movie, liked, key };
+  updateUndoButton();
+
   if (isContinuous()) {
-    reportSwipe(movie.id, liked);
+    reportSwipe(movie, liked);
     updateDeckCounter();
     revealNextCard();
     maybeShowFunMessages();
@@ -644,6 +723,49 @@ function recordSwipe(movie, liked, { deferFinish } = {}) {
     updateDeckCounter();
     revealNextCard();
   }
+}
+
+async function undoLastSwipe() {
+  const last = state.lastSwipe;
+  if (!last || !state.game || state.finishedSent || state.game.finished_at) return;
+
+  const { movie, liked, key } = last;
+  state.lastSwipe = null;
+  movie.hidden = false;
+
+  const swiped = normalizeMediaKeyList(loadJSON(swipedIdsKey(), [])).filter((id) => id !== key);
+  saveJSON(swipedIdsKey(), swiped);
+
+  if (liked) {
+    const likedIds = normalizeMediaKeyList(likedMovieIds()).filter((id) => id !== key);
+    saveJSON(likedIdsKey(), likedIds);
+  }
+
+  // Drop an offline queued report for this title if it never reached the server.
+  const pending = loadJSON(storageKey("pending_swipes"), []).filter((swipe) => {
+    if (swipe.gameId !== state.game.id) return true;
+    return titleKey(swipe.movieId, swipe.mediaType || "movie") !== key;
+  });
+  saveJSON(storageKey("pending_swipes"), pending);
+
+  if (isContinuous()) {
+    try {
+      await backend.undoSwipe(state.game.id, state.user.id, movie.id, movie.media_type || "movie");
+    } catch {
+      toast("Couldn't undo on the server — try again.");
+    }
+  }
+
+  state.noMoreMovies = false;
+  if (!document.getElementById("deck")) {
+    lastRenderKey = null;
+    render();
+  } else {
+    updateUndoButton();
+    buildDeckDom();
+    updateDeckCounter();
+  }
+  toast("Undo");
 }
 
 // ---------- rendering ----------
@@ -678,6 +800,7 @@ function render() {
     register: renderRegisterScreen,
     reset: renderResetScreen,
     home: renderHomeScreen,
+    shop: renderShopScreen,
     create: renderCreateScreen,
     history: renderHistoryScreen,
     lobby: renderLobbyScreen,
@@ -824,6 +947,8 @@ function renderRegisterScreen() {
       <form id="register-form" class="card form-card">
         <label for="register-email">Email</label>
         <input id="register-email" type="email" placeholder="you@example.com" required autocomplete="email">
+        <label for="register-phone">Phone <span class="muted">(optional, for SMS alerts)</span></label>
+        <input id="register-phone" type="tel" placeholder="+1 555 123 4567" autocomplete="tel">
         <label for="register-password">Password <span class="muted">(8+ characters)</span></label>
         <input id="register-password" type="password" placeholder="••••••••" required minlength="8" autocomplete="new-password">
         <button type="submit" class="btn btn-primary">Create login</button>
@@ -839,6 +964,7 @@ function renderRegisterScreen() {
         user_id: state.user?.id,
         username: state.user?.username,
         email: document.getElementById("register-email").value,
+        phone: document.getElementById("register-phone").value.trim() || undefined,
         password: document.getElementById("register-password").value,
       }));
       toast("Account saved — you can log in anywhere now!");
@@ -885,15 +1011,20 @@ function renderResetScreen() {
 
 function renderHomeScreen() {
   app.innerHTML = `
-    ${topBarHtml(`<button class="link" id="edit-name">${esc(state.user.username)}</button>`)}
+    ${topBarHtml(`<button class="link" id="edit-name">${usernameWithFlair(state.user)}</button>`)}
     <div class="screen">
       <div class="hero">
         <h1 class="headline">Movie night, <span class="accent">solved</span>.</h1>
         <p class="muted">Start a game, share the code, and swipe until you all like the same movie. First match wins — that's tonight's pick.</p>
       </div>
 
+      ${accountNudgeHtml("home")}
+
       <button class="btn btn-primary btn-big" id="quick-play">▶ Quick play</button>
       <button class="btn btn-ghost" id="create-game">Custom game (optional filters)</button>
+      <button class="btn btn-secondary" id="open-shop">Extras &amp; supporter</button>
+
+      ${adSlotHtml("home")}
 
       <form id="join-form" class="card form-card">
         <label for="join-code">Have a game code?</label>
@@ -913,23 +1044,40 @@ function renderHomeScreen() {
         <div id="friends-list"><p class="muted">Loading…</p></div>
       </section>
 
+      <section class="card list-card library-home-card">
+        <div class="section-heading">
+          <h2>Your movies</h2>
+          <button type="button" class="link" id="view-history">Browse all →</button>
+        </div>
+        <p class="muted library-home-copy">Recent likes and matches — settle on tonight’s pick or sift with a friend.</p>
+        <div id="home-settled-slot"></div>
+        <div id="home-library-preview"><p class="muted">Loading…</p></div>
+      </section>
+
       <section class="card list-card">
         <h2>Your games</h2>
         <div id="games-list"><p class="muted">Loading…</p></div>
       </section>
 
-      <button class="link" id="view-history">See previous games</button>
-
       ${state.user.email
-        ? `<p class="muted center-text">Logged in as ${esc(state.user.email)} · <button class="link inline-link" id="logout">Log out</button></p>`
-        : `<section class="card account-card">
-             <div>
-               <strong>Playing as a guest</strong>
-               <p class="muted">Create a login to keep your games and play from any device.</p>
-             </div>
-             <button class="btn btn-secondary" id="save-account">Create login</button>
-           </section>`}
+        ? `<section class="card form-card settings-card" id="notification-settings">
+             <h2>Notifications</h2>
+             <p class="muted">Email and SMS for invites, nudges, and matches. No app push yet.</p>
+             <label for="settings-phone">Phone</label>
+             <input id="settings-phone" type="tel" placeholder="+1 555 123 4567" value="${esc(state.user.phone || "")}" autocomplete="tel">
+             <label class="check-row"><input type="checkbox" id="pref-email" ${prefChecked("email_enabled")}> Email alerts</label>
+             <label class="check-row"><input type="checkbox" id="pref-sms" ${prefChecked("sms_enabled")}> SMS alerts</label>
+             <label class="check-row"><input type="checkbox" id="pref-invite" ${prefChecked("game_invite")}> Game invites</label>
+             <label class="check-row"><input type="checkbox" id="pref-nudge" ${prefChecked("game_nudge")}> Game nudges</label>
+             <label class="check-row"><input type="checkbox" id="pref-match" ${prefChecked("match_alert")}> Match alerts</label>
+             <button type="button" class="btn btn-secondary" id="save-settings">Save notification settings</button>
+             <p class="muted center-text">Logged in as ${esc(state.user.email)} · <button class="link inline-link" id="logout">Log out</button></p>
+           </section>`
+        : ""}
     </div>`;
+
+  bindAccountNudge();
+  bindAdSlots(app);
 
   document.getElementById("quick-play").addEventListener("click", (event) => {
     event.target.disabled = true;
@@ -938,6 +1086,11 @@ function renderHomeScreen() {
 
   document.getElementById("create-game").addEventListener("click", () => {
     state.view = "create";
+    render();
+  });
+
+  document.getElementById("open-shop")?.addEventListener("click", () => {
+    state.view = "shop";
     render();
   });
 
@@ -960,9 +1113,24 @@ function renderHomeScreen() {
     render();
   });
 
-  document.getElementById("save-account")?.addEventListener("click", () => {
-    state.view = "register";
-    render();
+  document.getElementById("save-settings")?.addEventListener("click", async () => {
+    try {
+      adoptUser(await backend.updateAccount({
+        phone: document.getElementById("settings-phone").value.trim(),
+        notification_preferences: {
+          email_enabled: document.getElementById("pref-email").checked,
+          sms_enabled: document.getElementById("pref-sms").checked,
+          game_invite: document.getElementById("pref-invite").checked,
+          game_nudge: document.getElementById("pref-nudge").checked,
+          match_alert: document.getElementById("pref-match").checked,
+        },
+      }));
+      toast("Notification settings saved.");
+      lastRenderKey = null;
+      render();
+    } catch (error) {
+      toast(error.serverMessage || "Could not save settings.");
+    }
   });
 
   document.getElementById("logout")?.addEventListener("click", () => {
@@ -972,8 +1140,101 @@ function renderHomeScreen() {
   renderGamesList();
   renderFriendsList();
   renderIncomingInvites();
+  renderHomeLibraryPreview();
   refreshGamesList();
   refreshFriendsAndInvites();
+}
+
+async function renderHomeLibraryPreview() {
+  const preview = document.getElementById("home-library-preview");
+  const settledSlot = document.getElementById("home-settled-slot");
+  if (!preview) return;
+
+  const pick = loadSettledPick();
+  if (settledSlot) {
+    if (pick?.key) {
+      settledSlot.innerHTML = `
+        <button type="button" class="home-settled-chip" id="home-open-settled">
+          <span class="settled-label">Tonight’s pick</span>
+          <strong>${esc(pick.title || "Your pick")}</strong>
+        </button>`;
+      settledSlot.querySelector("#home-open-settled")?.addEventListener("click", () => {
+        const { id, mediaType } = parseMediaKey(pick.key);
+        openMovieModal(id, mediaType);
+      });
+    } else {
+      settledSlot.innerHTML = "";
+    }
+  }
+
+  let games = [];
+  try {
+    games = await backend.previousGames(state.user.id);
+  } catch {
+    preview.innerHTML = `<p class="muted">Play a round to start collecting likes here.</p>`;
+    return;
+  }
+
+  if (!preview.isConnected) return;
+
+  const library = buildLibraryFromGames(games);
+  const matchKeys = new Set(library.matches.map(([key]) => key));
+  const keys = [
+    ...library.matches.map(([key]) => key),
+    ...library.myLikes.map(([key]) => key).filter((key) => !matchKeys.has(key)),
+  ].slice(0, 8);
+
+  if (keys.length === 0) {
+    preview.innerHTML = `
+      <p class="muted">No likes yet. After you swipe, your movies will show up here.</p>
+      <button type="button" class="btn btn-secondary btn-small" id="home-library-empty-cta">Open your movies</button>`;
+    preview.querySelector("#home-library-empty-cta")?.addEventListener("click", () => {
+      state.view = "history";
+      render();
+    });
+    return;
+  }
+
+  preview.innerHTML = `<div class="home-poster-row" id="home-poster-row"><p class="muted">Loading posters…</p></div>`;
+  const row = document.getElementById("home-poster-row");
+  const cards = await Promise.all(keys.map(async (key) => {
+    const { id, mediaType } = parseMediaKey(key);
+    const movie = await fetchMovieSummary(id, mediaType);
+    if (!movie) return null;
+    const poster = posterUrl(movie.poster_path, "w185");
+    const isMatch = matchKeys.has(key);
+    return `
+      <button type="button" class="home-poster-card" data-key="${esc(key)}" data-id="${id}" data-media="${esc(movie.media_type || mediaType || "movie")}" title="${esc(movie.title)}">
+        ${poster
+          ? `<img src="${poster}" alt="${esc(movie.title)}">`
+          : `<span class="home-poster-fallback">${esc((movie.title || "?").slice(0, 1))}</span>`}
+        ${isMatch ? `<span class="home-poster-badge">Match</span>` : ""}
+        <span class="home-poster-title">${esc(movie.title)}</span>
+      </button>`;
+  }));
+
+  if (!row?.isConnected) return;
+  const html = cards.filter(Boolean).join("");
+  row.innerHTML = html || `<p class="muted">Couldn't load recent titles.</p>`;
+
+  row.querySelectorAll(".home-poster-card").forEach((card) => {
+    card.addEventListener("click", () => {
+      openMovieModal(Number(card.dataset.id), card.dataset.media);
+    });
+  });
+}
+
+function prefChecked(key) {
+  const prefs = state.user?.notification_preferences || {};
+  const defaults = {
+    email_enabled: true,
+    sms_enabled: true,
+    game_invite: true,
+    game_nudge: true,
+    match_alert: true,
+  };
+  const value = prefs[key] ?? defaults[key];
+  return value ? "checked" : "";
 }
 
 function renderIncomingInvites() {
@@ -1043,21 +1304,33 @@ function renderGamesList() {
     return;
   }
 
-  container.innerHTML = state.currentGames.map((game) => `
+  container.innerHTML = state.currentGames.map((game) => {
+    const players = game.players.map((p) => esc(p.user?.username)).filter(Boolean).join(", ");
+    const modeTag = game.mode === "endless"
+      ? `<span class="endless-tag">Endless</span>`
+      : game.mode === "first_match"
+        ? `<span class="endless-tag">First match</span>`
+        : "";
+
+    return `
     <div class="game-row">
       <button class="game-row-main" data-code="${esc(game.entry_code)}">
-        <span class="game-code">${esc(game.entry_code)}</span>
-        ${game.mode === "endless" ? `<span class="endless-tag">Endless</span>` : ""}
-        ${game.mode === "first_match" ? `<span class="endless-tag">First match</span>` : ""}
-        <span class="game-players">${game.players.map((p) => esc(p.user?.username)).join(", ")}</span>
-        <span class="game-resume">Resume →</span>
+        <span class="game-row-info">
+          <span class="game-row-heading">
+            <span class="game-code">${esc(game.entry_code)}</span>
+            ${modeTag}
+          </span>
+          ${players ? `<span class="game-players">${players}</span>` : ""}
+        </span>
+        <span class="game-resume"><span class="game-resume-label">Resume </span><span aria-hidden="true">→</span></span>
       </button>
       <button class="game-remove" data-id="${game.id}" data-code="${esc(game.entry_code)}" aria-label="Remove from game" title="Remove from game">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
           <path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v9h-2V9zm4 0h2v9h-2V9zM7 9h2v9H7V9zm-1 12h12l1-12H5l1 12z"/>
         </svg>
       </button>
-    </div>`).join("");
+    </div>`;
+  }).join("");
 
   container.querySelectorAll(".game-row-main").forEach((row) => {
     row.addEventListener("click", () => joinGameByCode(row.dataset.code));
@@ -1342,7 +1615,12 @@ async function renderCreateScreen() {
   document.getElementById("create-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const selected = (id) =>
-      [...document.querySelectorAll(`#${id} .chip.selected`)].map((chip) => chip.dataset.value);
+      [...document.querySelectorAll(`#${id} .chip.selected`)].flatMap((chip) => {
+        if (chip.dataset.movieId || chip.dataset.tvId) {
+          return [chip.dataset.movieId, chip.dataset.tvId].filter(Boolean);
+        }
+        return chip.dataset.value ? [chip.dataset.value] : [];
+      });
     const eras = [...document.querySelectorAll("#era-chips .chip.selected")];
     const rating = document.querySelector("#rating-chips .chip.selected");
     const runtime = document.querySelector("#runtime-chips .chip.selected");
@@ -1385,22 +1663,42 @@ async function renderCreateScreen() {
     const chipContainer = document.getElementById("genre-chips");
     if (!chipContainer) return;
 
-    const genreMedia = media === "tv" ? "tv" : "movie";
     chipContainer.innerHTML = `<span class="muted">Loading genres…</span>`;
     try {
-      if (genreMedia === "tv") {
-        genresCacheTv = genresCacheTv || (await tmdb.genres("tv"));
+      genresCacheMovie = genresCacheMovie || genresCache || (await tmdb.genres("movie"));
+      genresCache = genresCacheMovie;
+      genresCacheTv = genresCacheTv || (await tmdb.genres("tv"));
+
+      let chipsHtml = "";
+      if (media === "both") {
+        const byName = new Map();
+        genresCacheMovie.forEach((g) => byName.set(g.name, { name: g.name, movieId: g.id, tvId: null }));
+        genresCacheTv.forEach((g) => {
+          const existing = byName.get(g.name);
+          if (existing) existing.tvId = g.id;
+          else byName.set(g.name, { name: g.name, movieId: null, tvId: g.id });
+        });
+        chipsHtml = [...byName.values()]
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map((g) => `
+            <button type="button" class="chip" data-movie-id="${g.movieId || ""}" data-tv-id="${g.tvId || ""}" data-value="${g.movieId || g.tvId}">
+              ${esc(g.name)}
+            </button>`)
+          .join("");
       } else {
-        genresCacheMovie = genresCacheMovie || genresCache || (await tmdb.genres("movie"));
-        genresCache = genresCacheMovie;
+        const list = media === "tv" ? genresCacheTv : genresCacheMovie;
+        chipsHtml = list
+          .map((g) => `<button type="button" class="chip" data-value="${g.id}">${esc(g.name)}</button>`)
+          .join("");
       }
-      const list = genreMedia === "tv" ? genresCacheTv : genresCacheMovie;
-      chipContainer.innerHTML = list
-        .map((g) => `<button type="button" class="chip" data-value="${g.id}">${esc(g.name)}</button>`)
-        .join("");
+
+      chipContainer.innerHTML = chipsHtml;
       if (pendingVibeGenres?.length) {
         chipContainer.querySelectorAll(".chip").forEach((chip) => {
-          chip.classList.toggle("selected", pendingVibeGenres.includes(Number(chip.dataset.value)));
+          const ids = [chip.dataset.value, chip.dataset.movieId, chip.dataset.tvId]
+            .filter(Boolean)
+            .map(Number);
+          chip.classList.toggle("selected", ids.some((id) => pendingVibeGenres.includes(id)));
         });
       }
     } catch {
@@ -1421,7 +1719,7 @@ function playerListHtml(showFinished = false) {
     const statusClass = (showFinished ? player.finished_at : player.ready_at) ? "ok" : "";
     return `
       <div class="player-row">
-        <span class="player-name">${esc(player.user?.username)}${player.user?.id === state.user.id ? " (you)" : ""}</span>
+        <span class="player-name">${usernameWithFlair(player.user)}${player.user?.id === state.user.id ? " (you)" : ""}</span>
         <span class="player-status ${statusClass}">${status}</span>
       </div>`;
   }).join("");
@@ -1462,6 +1760,8 @@ function renderLobbyScreen() {
         <div id="lobby-invites"></div>
       </section>
 
+      ${accountNudgeHtml("lobby")}
+
       <button class="btn btn-primary btn-big" id="ready-button" ${me?.ready_at ? "disabled" : ""}>
         ${me?.ready_at ? "Waiting for others…" : "I'm ready — start swiping"}
       </button>
@@ -1475,6 +1775,7 @@ function renderLobbyScreen() {
     </div>`;
 
   bindBrandHome();
+  bindAccountNudge();
   renderLobbyInvites();
 
   document.getElementById("copy-link").addEventListener("click", async () => {
@@ -1507,7 +1808,9 @@ function renderLobbyInvites() {
 
   const playerIds = new Set((state.game.players || []).map((p) => p.user?.id));
   const invitableFriends = state.friends.filter((f) => !playerIds.has(f.id));
-  const pendingIds = new Set(outgoingInvitesForGame(state.game.id).map((i) => i.invitee?.id));
+  const pendingByFriend = new Map(
+    outgoingInvitesForGame(state.game.id).map((i) => [i.invitee?.id, i])
+  );
 
   if (state.friends.length === 0) {
     container.innerHTML = `<p class="muted">No past co-players yet. Share the code above, or play once and invite them next time.</p>`;
@@ -1519,22 +1822,40 @@ function renderLobbyInvites() {
     return;
   }
 
-  container.innerHTML = invitableFriends.map((friend) => `
+  container.innerHTML = invitableFriends.map((friend) => {
+    const pending = pendingByFriend.get(friend.id);
+    return `
     <div class="friend-row">
       <div class="friend-info">
         <strong>${esc(friend.username || "Player")}</strong>
-        ${pendingIds.has(friend.id) ? `<span class="muted">Invite pending</span>` : ""}
+        ${pending ? `<span class="muted">Invite pending</span>` : ""}
       </div>
-      <button class="btn btn-secondary btn-small" data-invite="${friend.id}" ${pendingIds.has(friend.id) ? "disabled" : ""}>
-        ${pendingIds.has(friend.id) ? "Invited" : "Invite"}
-      </button>
-    </div>`).join("");
+      <div class="friend-actions">
+        ${pending
+          ? `<button class="btn btn-ghost btn-small" data-nudge="${pending.id}">Nudge</button>`
+          : `<button class="btn btn-secondary btn-small" data-invite="${friend.id}">Invite</button>`}
+      </div>
+    </div>`;
+  }).join("");
 
   container.querySelectorAll("[data-invite]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       btn.disabled = true;
       const invite = await inviteFriendToGame(Number(btn.dataset.invite), state.game.id);
       if (!invite) btn.disabled = false;
+    });
+  });
+
+  container.querySelectorAll("[data-nudge]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        await backend.nudgeGameInvite(Number(btn.dataset.nudge), state.user.id);
+        toast("Nudge sent.");
+      } catch (error) {
+        toast(error.serverMessage || "Couldn't send nudge.");
+        btn.disabled = false;
+      }
     });
   });
 }
@@ -1567,6 +1888,68 @@ function watchProviders(movie) {
   );
 }
 
+function watchTonightUrl(movie) {
+  return movie["watch/providers"]?.results?.US?.link || null;
+}
+
+function preferredFlatrateProviders(movie) {
+  const flatrate = movie["watch/providers"]?.results?.US?.flatrate || [];
+  if (!flatrate.length) return [];
+  const userCodes = new Set((state.user?.providers || []).map(String));
+  const preferred = flatrate.filter((p) => userCodes.has(String(p.provider_id)));
+  return preferred.length ? preferred : flatrate;
+}
+
+function matchShareUrl(movie) {
+  return watchTonightUrl(movie)
+    || `https://www.themoviedb.org/${movie.media_type === "tv" ? "tv" : "movie"}/${movie.id}`;
+}
+
+async function shareMatch(movie) {
+  const title = movie.title || "WannaWatch match";
+  const text = `WannaWatch match: ${title}`;
+  const url = matchShareUrl(movie);
+  if (navigator.share) {
+    try {
+      await navigator.share({ title, text, url });
+      return;
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(`${text}\n${url}`);
+    toast("Match copied to clipboard");
+  } catch {
+    toast("Couldn't share this match.");
+  }
+}
+
+function matchActionsHtml(movie, { compact = false } = {}) {
+  const watchUrl = watchTonightUrl(movie);
+  const preferred = preferredFlatrateProviders(movie);
+  const label = preferred[0]
+    ? `Watch on ${preferred[0].provider_name}`
+    : "Watch tonight";
+  return `
+    <div class="match-actions ${compact ? "compact" : ""}">
+      ${watchUrl
+        ? `<a class="btn btn-primary btn-small" href="${esc(watchUrl)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`
+        : `<span class="muted">No US streaming link yet</span>`}
+      <button type="button" class="btn btn-secondary btn-small" data-share-match>Share</button>
+    </div>`;
+}
+
+function bindMatchActions(root, movie) {
+  root.querySelectorAll("[data-share-match]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      shareMatch(movie);
+    });
+  });
+}
+
 function movieDetailsHtml(movie, { compact = false } = {}) {
   const year = movie.release_date ? movie.release_date.slice(0, 4) : "";
   const runtime = movie.runtime ? `${movie.runtime} min` : "";
@@ -1584,6 +1967,7 @@ function movieDetailsHtml(movie, { compact = false } = {}) {
       <p class="rating">★ ${rating} / 10 ${votes ? `<span class="muted">· ${esc(votes)}</span>` : ""}</p>
       <p class="meta-line">${[runtime, genres].filter(Boolean).map(esc).join(" · ")}</p>
       <p class="overview">${esc(movie.overview || "No description available.")}</p>
+      ${matchActionsHtml(movie, { compact })}
     </div>
     ${providers.length ? `
       <div class="details-block">
@@ -1624,7 +2008,8 @@ function movieDetailsHtml(movie, { compact = false } = {}) {
           const body = review.content.length > 280 ? `${review.content.slice(0, 280).trim()}…` : review.content;
           return `<blockquote class="review"><p>${esc(body)}</p><cite>— ${esc(review.author)}</cite></blockquote>`;
         }).join("")}
-      </div>` : ""}`;
+      </div>` : ""}
+    ${compact ? "" : deepDiveExtrasHtml(movie)}`;
 }
 
 function showTrailer(button) {
@@ -1664,7 +2049,7 @@ async function fillCardDetails(card, movie) {
   const panel = card.querySelector(".card-details");
   if (!panel || panel.dataset.loaded === "1") return;
   panel.innerHTML = `<p class="muted">Loading details…</p>`;
-  const details = await fetchMovieSummary(movie.id);
+  const details = await fetchMovieSummary(movie.id, movie.media_type);
   if (!panel.isConnected) return;
   if (!details) {
     panel.innerHTML = `<p class="overview">${esc(movie.overview || "No description available.")}</p><button type="button" class="link" data-flip-back>Tap to flip back</button>`;
@@ -1673,6 +2058,7 @@ async function fillCardDetails(card, movie) {
   panel.innerHTML = `${movieDetailsHtml(details, { compact: true })}<button type="button" class="link" data-flip-back>Flip back</button>`;
   panel.dataset.loaded = "1";
   bindTrailerButtons(panel);
+  bindMatchActions(panel, details);
 }
 
 async function openMovieModal(movieId, mediaType) {
@@ -1691,7 +2077,10 @@ async function openMovieModal(movieId, mediaType) {
     if (event.target === overlay) close();
   }, { once: true });
 
-  const movie = await fetchMovieSummary(movieId, mediaType);
+  const parsed = parseMediaKey(movieId);
+  const id = parsed.id || Number(movieId);
+  const media = mediaType || parsed.mediaType;
+  const movie = await fetchMovieSummary(id, media);
   if (!overlay.isConnected || overlay.hidden) return;
   if (!movie) {
     overlay.innerHTML = `<div class="modal-sheet"><p>Couldn't load that title.</p><button class="btn btn-ghost" id="modal-close">Close</button></div>`;
@@ -1709,19 +2098,26 @@ async function openMovieModal(movieId, mediaType) {
     </div>`;
   overlay.querySelector("#modal-close").addEventListener("click", close);
   bindTrailerButtons(overlay);
+  bindMatchActions(overlay, movie);
 }
 
 function bindResultCards(root) {
   root.querySelectorAll(".result-card[data-id]").forEach((card) => {
-    card.addEventListener("click", () => openMovieModal(Number(card.dataset.id), card.dataset.media));
+    card.addEventListener("click", (event) => {
+      if (event.target.closest(".match-actions, a, button")) return;
+      openMovieModal(card.dataset.id, card.dataset.media);
+    });
   });
 }
 
 const shownMatchBanners = new Set();
 
-async function showMatchBanner(movieId) {
-  if (shownMatchBanners.has(movieId)) return;
-  shownMatchBanners.add(movieId);
+async function showMatchBanner(mediaKeyOrId, mediaType) {
+  const key = typeof mediaKeyOrId === "string" && mediaKeyOrId.includes(":")
+    ? mediaKeyOrId
+    : titleKey(mediaKeyOrId, mediaType);
+  if (shownMatchBanners.has(key)) return;
+  shownMatchBanners.add(key);
   updateMatchesPill();
 
   let banner = document.getElementById("match-banner");
@@ -1732,7 +2128,8 @@ async function showMatchBanner(movieId) {
     document.body.appendChild(banner);
   }
 
-  const movie = await fetchMovieSummary(movieId);
+  const { id, mediaType: mt } = parseMediaKey(key);
+  const movie = await fetchMovieSummary(id, mt);
   const title = movie?.title || "a movie";
   banner.innerHTML = `
     ${movie?.poster_path ? `<img src="${posterUrl(movie.poster_path, "w92")}" alt="">` : ""}
@@ -1740,7 +2137,7 @@ async function showMatchBanner(movieId) {
   banner.hidden = false;
   banner.onclick = () => {
     banner.hidden = true;
-    openMovieModal(movieId);
+    openMovieModal(id, mt);
   };
   clearTimeout(showMatchBanner.timer);
   showMatchBanner.timer = setTimeout(() => { banner.hidden = true; }, 6000);
@@ -1788,25 +2185,34 @@ async function showMatchesModal() {
     </div>`;
   overlay.querySelector("#modal-close").addEventListener("click", close);
 
-  const cards = await Promise.all(ids.slice(0, 60).map(async (id) => {
-    const movie = await fetchMovieSummary(id);
+  const cards = await Promise.all(ids.slice(0, 60).map(async (key) => {
+    const { id, mediaType } = parseMediaKey(key);
+    const movie = await fetchMovieSummary(id, mediaType);
     if (!movie) return "";
     const poster = posterUrl(movie.poster_path, "w342");
-    const media = movie.media_type || "movie";
+    const media = movie.media_type || mediaType || "movie";
     return `
-      <button type="button" class="result-card" data-id="${id}" data-media="${media}">
-        ${poster ? `<img src="${poster}" alt="${esc(movie.title)}">` : `<div class="poster-missing">${esc(movie.title)}</div>`}
-        <div class="result-info"><strong>${esc(movie.title)}</strong></div>
-      </button>`;
+      <article class="result-card" data-id="${esc(key)}" data-media="${media}">
+        <button type="button" class="result-card-main" data-open-match>
+          ${poster ? `<img src="${poster}" alt="${esc(movie.title)}">` : `<div class="poster-missing">${esc(movie.title)}</div>`}
+          <div class="result-info"><strong>${esc(movie.title)}</strong></div>
+        </button>
+        ${matchActionsHtml(movie, { compact: true })}
+      </article>`;
   }));
 
   const grid = overlay.querySelector("#matches-grid");
   if (grid) {
     grid.innerHTML = cards.join("");
-    grid.querySelectorAll(".result-card[data-id]").forEach((card) => {
-      card.addEventListener("click", () => {
+    grid.querySelectorAll(".result-card").forEach((card, index) => {
+      const key = ids[index];
+      const { id, mediaType } = parseMediaKey(key);
+      card.querySelector("[data-open-match]")?.addEventListener("click", () => {
         close();
-        openMovieModal(Number(card.dataset.id), card.dataset.media);
+        openMovieModal(id, mediaType);
+      });
+      fetchMovieSummary(id, mediaType).then((movie) => {
+        if (movie) bindMatchActions(card, movie);
       });
     });
   }
@@ -1864,6 +2270,7 @@ function renderMatchScreen() {
       <div class="deck" id="deck"></div>
       <div class="swipe-actions">
         <button class="action-btn nope" id="nope-button" aria-label="Nope">✕</button>
+        <button class="action-btn undo" id="undo-button" aria-label="Undo last swipe" disabled>↶</button>
         <button class="action-btn like" id="like-button" aria-label="Like">♥</button>
       </div>
     </div>`;
@@ -1871,8 +2278,10 @@ function renderMatchScreen() {
   bindBrandHome();
   buildDeckDom();
   attachDeckGestures(document.getElementById("deck"));
+  updateUndoButton();
 
   document.getElementById("nope-button").addEventListener("click", () => swipeTopCard(false));
+  document.getElementById("undo-button").addEventListener("click", () => undoLastSwipe());
   document.getElementById("like-button").addEventListener("click", () => swipeTopCard(true));
 }
 
@@ -1923,6 +2332,7 @@ function renderContinuousMatchScreen() {
       <div class="deck" id="deck"></div>
       <div class="swipe-actions">
         <button class="action-btn nope" id="nope-button" aria-label="Nope">✕</button>
+        <button class="action-btn undo" id="undo-button" aria-label="Undo last swipe" disabled>↶</button>
         <button class="action-btn like" id="like-button" aria-label="Like">♥</button>
       </div>
     </div>`;
@@ -1930,6 +2340,7 @@ function renderContinuousMatchScreen() {
   bindBrandHome();
   buildDeckDom();
   attachDeckGestures(document.getElementById("deck"));
+  updateUndoButton();
 
   document.getElementById("matches-pill")?.addEventListener("click", showMatchesModal);
   document.getElementById("invite-pill").addEventListener("click", async () => {
@@ -1937,13 +2348,15 @@ function renderContinuousMatchScreen() {
     toast("Invite link copied — anyone can join and swipe on their own time!");
   });
   document.getElementById("nope-button").addEventListener("click", () => swipeTopCard(false));
+  document.getElementById("undo-button").addEventListener("click", () => undoLastSwipe());
   document.getElementById("like-button").addEventListener("click", () => swipeTopCard(true));
 }
 
 // ---------- first-match celebration ----------
 
 async function renderMatchFoundScreen() {
-  const matchId = state.finalMatchId || matchedIdsOf(state.game)[0];
+  const matchKey = state.finalMatchKey || matchedIdsOf(state.game)[0];
+  const parsed = matchKey ? parseMediaKey(matchKey) : null;
 
   const confetti = Array.from({ length: 36 }, () => {
     const left = Math.random() * 100;
@@ -1961,6 +2374,7 @@ async function renderMatchFoundScreen() {
       <h1 class="headline">It's a match! 🎉</h1>
       <p class="muted">Everyone agreed — tonight you're watching:</p>
       <div class="final-movie" id="final-movie"><div class="spinner"></div></div>
+      <div id="final-actions" class="button-row full-width"></div>
       <div class="button-row full-width">
         <button class="btn btn-secondary" id="final-details">Details</button>
         <button class="btn btn-primary" id="play-again">Play again</button>
@@ -1969,15 +2383,17 @@ async function renderMatchFoundScreen() {
     </div>`;
 
   bindBrandHome();
-  document.getElementById("final-details").addEventListener("click", () => matchId && openMovieModal(matchId));
+  document.getElementById("final-details").addEventListener("click", () => {
+    if (parsed) openMovieModal(parsed.id, parsed.mediaType);
+  });
   document.getElementById("play-again").addEventListener("click", (event) => {
     event.target.disabled = true;
     quickPlay();
   });
   document.getElementById("back-home").addEventListener("click", leaveGame);
 
-  if (!matchId) return;
-  const movie = await fetchMovieSummary(matchId);
+  if (!parsed) return;
+  const movie = await fetchMovieSummary(parsed.id, parsed.mediaType);
   const el = document.getElementById("final-movie");
   if (!el || !movie) return;
   const year = movie.release_date ? movie.release_date.slice(0, 4) : "";
@@ -1985,6 +2401,11 @@ async function renderMatchFoundScreen() {
     ${movie.poster_path ? `<img src="${posterUrl(movie.poster_path, "w342")}" alt="${esc(movie.title)}">` : ""}
     <strong>${esc(movie.title)}</strong>
     <span class="muted">${year} · ★ ${movie.vote_average ? movie.vote_average.toFixed(1) : "–"}</span>`;
+  const actions = document.getElementById("final-actions");
+  if (actions) {
+    actions.innerHTML = matchActionsHtml(movie);
+    bindMatchActions(actions, movie);
+  }
 }
 
 function movieCardHtml(movie) {
@@ -2027,12 +2448,19 @@ function updateDeckCounter() {
   const counter = document.getElementById("deck-counter");
   if (!counter) return;
   if (isContinuous()) {
-    const swipedCount = loadJSON(swipedIdsKey(), []).length;
+    const swipedCount = normalizeMediaKeyList(loadJSON(swipedIdsKey(), [])).length;
     counter.textContent = `${swipedCount} swiped`;
     return;
   }
   const count = unswipedMovies().length;
   counter.textContent = `${count} movie${count === 1 ? "" : "s"} left`;
+}
+
+function updateUndoButton() {
+  const button = document.getElementById("undo-button");
+  if (!button) return;
+  const canUndo = Boolean(state.lastSwipe) && !state.finishedSent && !state.game?.finished_at;
+  button.disabled = !canUndo;
 }
 
 // ---------- playful progress messages ----------
@@ -2072,7 +2500,7 @@ function wiggleDeck() {
 
 function maybeShowFunMessages() {
   if (state.game?.finished_at) return;
-  const myCount = loadJSON(swipedIdsKey(), []).length;
+  const myCount = normalizeMediaKeyList(loadJSON(swipedIdsKey(), [])).length;
 
   if (MILESTONE_MESSAGES[myCount] && !shownFunMessages.has(`m${myCount}`)) {
     shownFunMessages.add(`m${myCount}`);
@@ -2127,7 +2555,8 @@ function topCardEl(deck) {
 }
 
 function movieForCard(card) {
-  return state.movies.find((m) => m.id === Number(card.dataset.id));
+  const key = titleKey(card.dataset.id, card.dataset.media);
+  return state.movies.find((m) => titleKey(m) === key);
 }
 
 // Adds the next queued card underneath the visible stack, so swipes never
@@ -2136,9 +2565,9 @@ function revealNextCard() {
   const deck = document.getElementById("deck");
   if (!deck) return;
   const visibleIds = new Set(
-    [...deck.querySelectorAll(".movie-card:not(.flying)")].map((c) => Number(c.dataset.id))
+    [...deck.querySelectorAll(".movie-card:not(.flying)")].map((c) => titleKey(c.dataset.id, c.dataset.media))
   );
-  const next = unswipedMovies().slice(0, 3).find((m) => !visibleIds.has(m.id));
+  const next = unswipedMovies().slice(0, 3).find((m) => !visibleIds.has(titleKey(m)));
   if (next) deck.insertAdjacentHTML("afterbegin", movieCardHtml(next));
 }
 
@@ -2279,7 +2708,7 @@ function renderWaitingScreen() {
 // ---------- results ----------
 
 async function renderResultsScreen() {
-  const idLists = (state.game.players || []).map((p) => p.liked_movie_ids || []);
+  const idLists = (state.game.players || []).map((p) => normalizeMediaKeyList(p.liked_movie_ids || []));
   const matchedIds = idLists.length
     ? idLists.reduce((a, b) => a.filter((id) => b.includes(id)))
     : [];
@@ -2297,8 +2726,9 @@ async function renderResultsScreen() {
       <h1 class="headline-sm center-text">${heading}</h1>
       <p class="muted center-text">${matchedIds.length === 0
         ? "Nobody liked the same movies. Keep playing for a fresh batch!"
-        : "You all swiped right on these:"}</p>
+        : "You all swiped right on these — rewatch, stream, or share:"}</p>
       <div class="results-grid" id="results-grid"></div>
+      ${adSlotHtml("results")}
       <div class="button-row sticky-actions">
         <button class="btn btn-primary" id="keep-playing">Keep playing</button>
         <button class="btn btn-ghost" id="go-home">Home</button>
@@ -2306,52 +2736,70 @@ async function renderResultsScreen() {
     </div>`;
 
   bindBrandHome();
+  bindAdSlots(app);
   onTap(document.getElementById("keep-playing"), keepPlaying);
   onTap(document.getElementById("go-home"), leaveGame);
 
   const grid = document.getElementById("results-grid");
   if (matchedIds.length === 0) return;
 
-  const localMovies = new Map(state.movies.map((m) => [m.id, m]));
-  const cards = await Promise.all(matchedIds.slice(0, 30).map(async (id) => {
-    const movie = localMovies.get(id) || (await fetchMovieSummary(id));
+  const localMovies = new Map(state.movies.map((m) => [titleKey(m), m]));
+  const cards = await Promise.all(matchedIds.slice(0, 30).map(async (key) => {
+    const { id, mediaType } = parseMediaKey(key);
+    const movie = localMovies.get(key) || (await fetchMovieSummary(id, mediaType));
     if (!movie) return "";
     const poster = posterUrl(movie.poster_path, "w342");
     const year = movie.release_date ? movie.release_date.slice(0, 4) : "";
-    const media = movie.media_type || "movie";
+    const media = movie.media_type || mediaType || "movie";
     return `
-      <button type="button" class="result-card" data-id="${id}" data-media="${media}">
-        ${poster ? `<img src="${poster}" alt="${esc(movie.title)}">` : `<div class="poster-missing">${esc(movie.title)}</div>`}
-        <div class="result-info">
-          <strong>${esc(movie.title)}</strong>
-          <span class="muted">${year} · ★ ${movie.vote_average ? movie.vote_average.toFixed(1) : "–"}</span>
-        </div>
-      </button>`;
+      <article class="result-card actionable" data-id="${esc(key)}" data-media="${media}">
+        <button type="button" class="result-card-main" data-open-match>
+          ${poster ? `<img src="${poster}" alt="${esc(movie.title)}">` : `<div class="poster-missing">${esc(movie.title)}</div>`}
+          <div class="result-info">
+            <strong>${esc(movie.title)}</strong>
+            <span class="muted">${year} · ★ ${movie.vote_average ? movie.vote_average.toFixed(1) : "–"}</span>
+          </div>
+        </button>
+        ${matchActionsHtml(movie, { compact: true })}
+      </article>`;
   }));
 
   if (grid.isConnected) {
     grid.innerHTML = cards.join("");
-    bindResultCards(grid);
+    const resolved = await Promise.all(matchedIds.slice(0, 30).map(async (key, index) => {
+      const card = grid.children[index];
+      if (!card) return null;
+      const { id, mediaType } = parseMediaKey(key);
+      card.querySelector("[data-open-match]")?.addEventListener("click", () => openMovieModal(id, mediaType));
+      const movie = await fetchMovieSummary(id, mediaType);
+      if (movie) bindMatchActions(card, movie);
+      return movie;
+    }));
+    const added = mergeIntoVault(resolved.filter(Boolean));
+    if (added > 0) toast(`Saved ${added} to Match Vault.`);
   }
 }
 
-// ---------- previous games ----------
+// ---------- movie library (likes, matches, friend curation) ----------
 
 const movieSummaryCache = new Map();
 
 async function fetchMovieSummary(id, mediaType) {
-  const hinted = mediaType || state.movies?.find((m) => m.id === id)?.media_type;
+  const parsed = parseMediaKey(id);
+  const numericId = parsed.id || Number(id);
+  const hinted = mediaType || parsed.mediaType || state.movies?.find((m) => m.id === numericId)?.media_type;
   const order = hinted === "tv" ? ["tv", "movie"] : hinted === "movie" ? ["movie"] : ["movie", "tv"];
 
   for (const type of order) {
-    const cacheKey = `${type}:${id}`;
+    const cacheKey = `${type}:${numericId}`;
     if (movieSummaryCache.has(cacheKey)) {
       const cached = movieSummaryCache.get(cacheKey);
       if (cached) return cached;
       continue;
     }
     try {
-      const movie = await tmdb.details(id, type);
+      const movie = await tmdb.details(numericId, type);
+      movie.media_type = movie.media_type || type;
       movieSummaryCache.set(cacheKey, movie);
       return movie;
     } catch {
@@ -2362,139 +2810,420 @@ async function fetchMovieSummary(id, mediaType) {
 }
 
 function matchedIdsFor(game) {
-  const lists = (game.players || []).map((p) => p.liked_movie_ids || []);
+  const lists = (game.players || []).map((p) => normalizeMediaKeyList(p.liked_movie_ids || []));
   return lists.length ? lists.reduce((a, b) => a.filter((id) => b.includes(id))) : [];
+}
+
+function settledPickKey() {
+  return storageKey(`settled_${state.user?.id || "guest"}`);
+}
+
+function loadSettledPick() {
+  return loadJSON(settledPickKey(), null);
+}
+
+function saveSettledPick(entry) {
+  saveJSON(settledPickKey(), entry);
+}
+
+function clearSettledPick() {
+  localStorage.removeItem(settledPickKey());
+}
+
+// Aggregate likes/matches across finished games into movie-centric lists.
+function buildLibraryFromGames(games) {
+  const myLikes = new Map(); // key -> { count, with: Set<name>, lastAt }
+  const matches = new Map(); // key -> { with: Set<name>, count }
+
+  games.forEach((game) => {
+    const finishedAt = game.finished_at ? Date.parse(game.finished_at) : 0;
+    const players = game.players || [];
+    const me = players.find((p) => p.user?.id === state.user.id);
+    const others = players.filter((p) => p.user?.id !== state.user.id);
+
+    normalizeMediaKeyList(me?.liked_movie_ids || []).forEach((key) => {
+      const entry = myLikes.get(key) || { count: 0, with: new Set(), lastAt: 0 };
+      entry.count += 1;
+      entry.lastAt = Math.max(entry.lastAt, finishedAt);
+      others.forEach((p) => {
+        if (normalizeMediaKeyList(p.liked_movie_ids || []).includes(key)) {
+          entry.with.add(p.user?.username || "Friend");
+        }
+      });
+      myLikes.set(key, entry);
+    });
+
+    if (players.length < 2) return;
+    matchedIdsFor(game).forEach((key) => {
+      const entry = matches.get(key) || { with: new Set(), count: 0 };
+      entry.count += 1;
+      others.forEach((p) => entry.with.add(p.user?.username || "Friend"));
+      matches.set(key, entry);
+    });
+  });
+
+  const sortMyLikes = [...myLikes.entries()].sort((a, b) => {
+    if (b[1].with.size !== a[1].with.size) return b[1].with.size - a[1].with.size;
+    if (b[1].count !== a[1].count) return b[1].count - a[1].count;
+    return b[1].lastAt - a[1].lastAt;
+  });
+
+  const sortMatches = [...matches.entries()].sort((a, b) => {
+    if (b[1].count !== a[1].count) return b[1].count - a[1].count;
+    return b[1].with.size - a[1].with.size;
+  });
+
+  return { myLikes: sortMyLikes, matches: sortMatches };
 }
 
 async function renderHistoryScreen() {
   app.innerHTML = `
     ${topBarHtml("")}
-    <div class="screen">
-      <h1 class="headline-sm">Previous games</h1>
-      <p class="muted">Tap a game to see what everyone matched on — or flip to see all likes.</p>
+    <div class="screen library-screen">
+      <h1 class="headline-sm">Your movies</h1>
+      <p class="muted">Likes and matches across every night — pick tonight’s film, or narrow a list with a friend.</p>
+      ${accountNudgeHtml("history")}
+      <div id="settled-banner"></div>
+      <div class="tab-row library-tabs">
+        <button class="tab ${state.libraryTab === "matches" ? "active" : ""}" data-lib-tab="matches">Matches</button>
+        <button class="tab ${state.libraryTab === "likes" ? "active" : ""}" data-lib-tab="likes">My likes</button>
+        <button class="tab ${state.libraryTab === "friends" ? "active" : ""}" data-lib-tab="friends">With a friend</button>
+      </div>
       <div id="history-content"><p class="muted">Loading…</p></div>
       <button class="link" id="back-home">Back to home</button>
     </div>`;
 
   bindBrandHome();
+  bindAccountNudge();
+  renderSettledBanner();
+
   document.getElementById("back-home").addEventListener("click", () => {
     state.view = "home";
     render();
+  });
+
+  document.querySelectorAll("[data-lib-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.libraryTab = button.dataset.libTab;
+      if (state.libraryTab !== "friends") state.libraryFriendId = null;
+      renderHistoryScreen();
+    });
   });
 
   let games = [];
   try {
     games = await backend.previousGames(state.user.id);
   } catch {
-    // shows the empty state below
+    // empty state below
   }
 
   const container = document.getElementById("history-content");
   if (!container) return;
 
-  if (games.length === 0) {
-    container.innerHTML = `<p class="muted">No finished games yet — play one first!</p>`;
+  const library = buildLibraryFromGames(games);
+  if (state.libraryTab === "matches") {
+    await renderLibraryMatches(container, library.matches);
+  } else if (state.libraryTab === "likes") {
+    await renderLibraryLikes(container, library.myLikes);
+  } else {
+    await renderLibraryFriends(container);
+  }
+}
+
+function renderSettledBanner() {
+  const el = document.getElementById("settled-banner");
+  if (!el) return;
+  const pick = loadSettledPick();
+  if (!pick?.key) {
+    el.innerHTML = "";
     return;
   }
-  renderHistoryList(container, games);
-}
 
-function renderHistoryList(container, games) {
-  container.innerHTML = games.map((game) => {
-    const date = game.finished_at
-      ? new Date(game.finished_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })
-      : "";
-    const names = game.players.map((p) => esc(p.user?.username)).join(", ");
-    const solo = game.players.length === 1;
-    const count = matchedIdsFor(game).length;
-    const label = solo
-      ? `${count} like${count === 1 ? "" : "s"}`
-      : `${count} match${count === 1 ? "" : "es"}`;
-    return `
-      <button class="game-row" data-id="${game.id}">
-        <span class="game-code">${esc(game.entry_code)}</span>
-        <span class="game-players">${names}</span>
-        <span class="match-badge">${label}</span>
-        <span class="muted">${date}</span>
-      </button>`;
-  }).join("");
+  el.innerHTML = `
+    <section class="card settled-card">
+      <div>
+        <p class="settled-label">Tonight’s pick</p>
+        <strong>${esc(pick.title || "Your pick")}</strong>
+        ${pick.withNames ? `<p class="muted">With ${esc(pick.withNames)}</p>` : ""}
+      </div>
+      <div class="settled-actions">
+        <button type="button" class="btn btn-primary btn-small" data-open-settled>Open</button>
+        <button type="button" class="btn btn-ghost btn-small" data-clear-settled>Clear</button>
+      </div>
+    </section>`;
 
-  container.querySelectorAll(".game-row").forEach((row) => {
-    row.addEventListener("click", () => {
-      const game = games.find((g) => g.id === Number(row.dataset.id));
-      renderHistoryDetail(container, games, game, "matches");
-    });
+  el.querySelector("[data-open-settled]")?.addEventListener("click", () => {
+    const { id, mediaType } = parseMediaKey(pick.key);
+    openMovieModal(id, mediaType);
+  });
+  el.querySelector("[data-clear-settled]")?.addEventListener("click", () => {
+    clearSettledPick();
+    renderSettledBanner();
+    toast("Cleared tonight’s pick.");
   });
 }
 
-async function renderHistoryDetail(container, games, game, tab) {
-  const matchedIds = matchedIdsFor(game);
-  const playerCount = game.players.length;
-
-  const likersByMovie = new Map();
-  game.players.forEach((player) => {
-    (player.liked_movie_ids || []).forEach((id) => {
-      if (!likersByMovie.has(id)) likersByMovie.set(id, []);
-      likersByMovie.get(id).push(player.user?.username || "Someone");
-    });
-  });
-  const allLikedIds = [...likersByMovie.keys()]
-    .sort((a, b) => likersByMovie.get(b).length - likersByMovie.get(a).length);
-
-  const ids = tab === "matches" ? matchedIds : allLikedIds;
+async function renderLibraryMatches(container, matchEntries) {
+  if (matchEntries.length === 0) {
+    container.innerHTML = `
+      <p class="muted">No matches yet. Play with a friend until you both like the same title — they’ll land here.</p>`;
+    return;
+  }
 
   container.innerHTML = `
-    <div class="history-header">
-      <button class="link" id="history-back">← All games</button>
-      <span class="code-pill">${esc(game.entry_code)}</span>
+    <div class="library-toolbar">
+      <p class="muted">${matchEntries.length} title${matchEntries.length === 1 ? "" : "s"} you matched on</p>
+      ${matchEntries.length > 1
+        ? `<button type="button" class="btn btn-secondary btn-small" id="settle-random">Pick one for us</button>`
+        : ""}
     </div>
-    <p class="muted">Played by ${game.players.map((p) => esc(p.user?.username)).join(", ")}</p>
-    <div class="tab-row">
-      <button class="tab ${tab === "matches" ? "active" : ""}" data-tab="matches">
-        ${playerCount === 1 ? "Likes" : "Matches"} (${matchedIds.length})
-      </button>
-      <button class="tab ${tab === "all" ? "active" : ""}" data-tab="all">All likes (${allLikedIds.length})</button>
-    </div>
-    <div id="history-grid" class="results-grid">${ids.length ? `<p class="muted">Loading movies…</p>` : ""}</div>`;
+    <div id="library-grid" class="results-grid"><p class="muted">Loading…</p></div>`;
 
-  document.getElementById("history-back").addEventListener("click", () => renderHistoryList(container, games));
-  container.querySelectorAll(".tab").forEach((button) => {
-    button.addEventListener("click", () => renderHistoryDetail(container, games, game, button.dataset.tab));
+  document.getElementById("settle-random")?.addEventListener("click", async () => {
+    const [key, meta] = matchEntries[Math.floor(Math.random() * Math.min(matchEntries.length, 30))];
+    const { id, mediaType } = parseMediaKey(key);
+    const movie = await fetchMovieSummary(id, mediaType);
+    settleOnTitle(key, movie, [...(meta.with || [])].join(", "));
   });
 
-  const grid = document.getElementById("history-grid");
-  if (ids.length === 0) {
-    grid.outerHTML = `<p class="muted">${tab === "matches" && playerCount > 1
-      ? "No matches in this game."
-      : "No likes in this game."}</p>`;
+  await fillLibraryGrid(
+    document.getElementById("library-grid"),
+    matchEntries.slice(0, 40).map(([key, meta]) => ({
+      key,
+      subtitle: `Matched with ${[...meta.with].join(", ") || "friends"}`,
+      withNames: [...meta.with].join(", "),
+      showSettle: true,
+    }))
+  );
+}
+
+async function renderLibraryLikes(container, likeEntries) {
+  if (likeEntries.length === 0) {
+    container.innerHTML = `<p class="muted">No likes yet — swipe right in a game and they’ll show up here.</p>`;
     return;
   }
 
-  const cards = await Promise.all(ids.slice(0, 30).map(async (id) => {
-    const movie = await fetchMovieSummary(id);
-    if (!movie) return "";
-    const likers = likersByMovie.get(id) || [];
-    const everyone = playerCount > 1 && likers.length === playerCount;
-    const year = movie.release_date ? movie.release_date.slice(0, 4) : "";
-    const subtitle = tab === "all"
-      ? (everyone ? "⭐ Everyone liked this" : `Liked by ${likers.map(esc).join(", ")}`)
-      : `${year} · ★ ${movie.vote_average ? movie.vote_average.toFixed(1) : "–"}`;
-    const poster = posterUrl(movie.poster_path, "w342");
-    const media = movie.media_type || "movie";
-    return `
-      <button type="button" class="result-card" data-id="${id}" data-media="${media}">
-        ${poster ? `<img src="${poster}" alt="${esc(movie.title)}">` : `<div class="poster-missing">${esc(movie.title)}</div>`}
-        <div class="result-info">
-          <strong>${esc(movie.title)}</strong>
-          <span class="muted">${subtitle}</span>
-        </div>
-      </button>`;
-  }));
+  container.innerHTML = `
+    <div class="library-toolbar">
+      <p class="muted">${likeEntries.length} title${likeEntries.length === 1 ? "" : "s"} you’ve liked</p>
+      ${likeEntries.length > 1
+        ? `<button type="button" class="btn btn-secondary btn-small" id="settle-random-likes">Settle on one</button>`
+        : ""}
+    </div>
+    <div id="library-grid" class="results-grid"><p class="muted">Loading…</p></div>`;
 
-  if (grid.isConnected) {
-    grid.innerHTML = cards.join("");
-    bindResultCards(grid);
+  document.getElementById("settle-random-likes")?.addEventListener("click", async () => {
+    const pooled = likeEntries.slice(0, 30);
+    const [key, meta] = pooled[Math.floor(Math.random() * pooled.length)];
+    const { id, mediaType } = parseMediaKey(key);
+    const movie = await fetchMovieSummary(id, mediaType);
+    settleOnTitle(key, movie, [...(meta.with || [])].join(", "));
+  });
+
+  await fillLibraryGrid(
+    document.getElementById("library-grid"),
+    likeEntries.slice(0, 40).map(([key, meta]) => ({
+      key,
+      subtitle: meta.with.size
+        ? `Also liked with ${[...meta.with].join(", ")}`
+        : `Liked in ${meta.count} game${meta.count === 1 ? "" : "s"}`,
+      withNames: [...meta.with].join(", "),
+      showSettle: true,
+    }))
+  );
+}
+
+async function renderLibraryFriends(container) {
+  if (!state.friends.length) {
+    try {
+      const friends = await backend.friends(state.user.id);
+      state.friends = friends.filter((f) => f.id !== state.user.id);
+    } catch {
+      state.friends = [];
+    }
   }
+
+  if (state.friends.length === 0) {
+    container.innerHTML = `
+      <p class="muted">Play with someone first — then you can sift through the movies you’ve both liked.</p>`;
+    return;
+  }
+
+  const friend = state.friends.find((f) => f.id === state.libraryFriendId) || null;
+
+  container.innerHTML = `
+    <label class="library-friend-label" for="library-friend">Friend</label>
+    <select id="library-friend" class="library-friend-select">
+      <option value="">Choose a friend…</option>
+      ${state.friends.map((f) => `
+        <option value="${f.id}" ${friend?.id === f.id ? "selected" : ""}>${esc(f.username || "Player")}</option>
+      `).join("")}
+    </select>
+    <div id="friend-library-body"><p class="muted">Pick a friend to see titles you’ve both liked.</p></div>`;
+
+  document.getElementById("library-friend").addEventListener("change", (event) => {
+    state.libraryFriendId = event.target.value ? Number(event.target.value) : null;
+    renderLibraryFriends(container);
+  });
+
+  if (!friend) return;
+
+  const body = document.getElementById("friend-library-body");
+  body.innerHTML = `<p class="muted">Loading movies with ${esc(friend.username)}…</p>`;
+
+  let shared = [];
+  let mine = [];
+  let theirs = [];
+  try {
+    const data = await backend.friendsMovieIds(state.user.id, friend.id);
+    shared = normalizeMediaKeyList(data.ourLikedMovieIds || []);
+    mine = normalizeMediaKeyList(data.myLikedMovieIds || []);
+    theirs = normalizeMediaKeyList(data.friendsLikedMovieIds || []);
+  } catch {
+    body.innerHTML = `<p class="muted">Couldn't load shared likes. Try again.</p>`;
+    return;
+  }
+
+  body.innerHTML = `
+    <div class="library-toolbar">
+      <p class="muted"><strong>${shared.length}</strong> in common · you liked ${mine.length} · ${esc(friend.username)} liked ${theirs.length}</p>
+    </div>
+    ${shared.length >= 2
+      ? `<button type="button" class="btn btn-primary" id="sift-with-friend">Narrow it down together</button>
+         <p class="hint">Starts a first-match game using only the movies you’ve both already liked.</p>`
+      : shared.length === 1
+        ? `<button type="button" class="btn btn-primary" id="settle-shared-one">That’s the one — settle</button>`
+        : `<p class="muted">No shared likes yet. Play a game with ${esc(friend.username)} first.</p>`}
+    ${shared.length > 1
+      ? `<button type="button" class="btn btn-ghost btn-small" id="settle-random-shared">Pick one for us</button>`
+      : ""}
+    <div id="library-grid" class="results-grid"></div>`;
+
+  document.getElementById("sift-with-friend")?.addEventListener("click", async (event) => {
+    event.target.disabled = true;
+    await startCurateGameWithFriend(friend.id, shared);
+  });
+
+  document.getElementById("settle-shared-one")?.addEventListener("click", async () => {
+    const key = shared[0];
+    const { id, mediaType } = parseMediaKey(key);
+    settleOnTitle(key, await fetchMovieSummary(id, mediaType), friend.username);
+  });
+
+  document.getElementById("settle-random-shared")?.addEventListener("click", async () => {
+    const key = shared[Math.floor(Math.random() * shared.length)];
+    const { id, mediaType } = parseMediaKey(key);
+    settleOnTitle(key, await fetchMovieSummary(id, mediaType), friend.username);
+  });
+
+  if (shared.length === 0) return;
+
+  await fillLibraryGrid(
+    document.getElementById("library-grid"),
+    shared.slice(0, 40).map((key) => ({
+      key,
+      subtitle: `You & ${friend.username} both liked this`,
+      withNames: friend.username,
+      showSettle: true,
+    }))
+  );
+}
+
+async function startCurateGameWithFriend(friendId, keys) {
+  if (!keys?.length) {
+    toast("Need shared likes to narrow down.");
+    return;
+  }
+  try {
+    const values = { ...defaultGameValues(), curateKeys: keys.slice(0, 40), mode: "first_match" };
+    const query = buildDiscoverQuery(values);
+    const game = await backend.upsertGame({
+      entry_code: generateEntryCode(),
+      query: JSON.stringify(query),
+      user_id: state.user.id,
+      providers: state.user.providers || [],
+      mode: "first_match",
+    });
+    await inviteFriendToGame(friendId, game.id);
+    toast("Invite sent — swipe your shared likes until one wins.");
+    startGame(game);
+  } catch {
+    toast("Couldn't start that sift session.");
+  }
+}
+
+function settleOnTitle(key, movie, withNames = "") {
+  if (!key) return;
+  saveSettledPick({
+    key,
+    title: movie?.title || "Tonight’s pick",
+    withNames: withNames || "",
+    at: Date.now(),
+  });
+  renderSettledBanner();
+  toast(`Settled: ${movie?.title || "tonight’s pick"}`);
+  if (movie) openMovieModal(movie.id, movie.media_type);
+}
+
+async function fillLibraryGrid(grid, items) {
+  if (!grid) return;
+  if (!items.length) {
+    grid.innerHTML = "";
+    return;
+  }
+
+  grid.innerHTML = `<p class="muted">Loading movies…</p>`;
+  const resolved = [];
+  for (const item of items) {
+    const { id, mediaType } = parseMediaKey(item.key);
+    const movie = await fetchMovieSummary(id, mediaType);
+    if (!movie) continue;
+    resolved.push({ item, movie, id, mediaType });
+  }
+
+  if (!grid.isConnected) return;
+  if (!resolved.length) {
+    grid.innerHTML = `<p class="muted">Couldn't load those titles.</p>`;
+    return;
+  }
+
+  grid.innerHTML = resolved.map(({ item, movie, mediaType }) => {
+    const year = movie.release_date ? movie.release_date.slice(0, 4) : "";
+    const poster = posterUrl(movie.poster_path, "w342");
+    const media = movie.media_type || mediaType || "movie";
+    const providers = preferredFlatrateProviders(movie);
+    const watchLabel = providers[0] ? `Watch on ${providers[0].provider_name}` : "Watch tonight";
+    return `
+      <article class="result-card actionable" data-id="${esc(item.key)}" data-media="${media}" data-with="${esc(item.withNames || "")}">
+        <button type="button" class="result-card-main" data-open-match>
+          ${poster ? `<img src="${poster}" alt="${esc(movie.title)}">` : `<div class="poster-missing">${esc(movie.title)}</div>`}
+          <div class="result-info">
+            <strong>${esc(movie.title)}</strong>
+            <span class="muted">${esc(item.subtitle || `${year} · ★ ${movie.vote_average ? movie.vote_average.toFixed(1) : "–"}`)}</span>
+          </div>
+        </button>
+        <div class="match-actions compact">
+          ${item.showSettle
+            ? `<button type="button" class="btn btn-secondary btn-small" data-settle>Tonight</button>`
+            : ""}
+          ${watchTonightUrl(movie)
+            ? `<a class="btn btn-primary btn-small" href="${esc(watchTonightUrl(movie))}" target="_blank" rel="noopener noreferrer">${esc(watchLabel)}</a>`
+            : ""}
+          <button type="button" class="btn btn-ghost btn-small" data-share-match>Share</button>
+        </div>
+      </article>`;
+  }).join("");
+
+  [...grid.querySelectorAll(".result-card")].forEach((card, index) => {
+    const { item, movie, id, mediaType } = resolved[index];
+    card.querySelector("[data-open-match]")?.addEventListener("click", () => openMovieModal(id, mediaType));
+    card.querySelector("[data-settle]")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      settleOnTitle(item.key, movie, item.withNames || card.dataset.with || "");
+    });
+    bindMatchActions(card, movie);
+  });
 }
 
 boot();

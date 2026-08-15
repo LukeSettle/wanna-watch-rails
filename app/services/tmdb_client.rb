@@ -30,6 +30,11 @@ class TmdbClient
     get("/tv/#{tv_id}/recommendations")["results"] || []
   end
 
+  def self.details(id, media: "movie")
+    path = media.to_s == "tv" ? "/tv/#{id}" : "/movie/#{id}"
+    get(path)
+  end
+
   # Region hash: { "US" => { "flatrate" => [...], "rent" => [...], ... }, ... }
   def self.watch_providers(id, media: "movie")
     path = media.to_s == "tv" ? "/tv/#{id}/watch/providers" : "/movie/#{id}/watch/providers"

@@ -45,6 +45,7 @@ class GameInvite < ApplicationRecord
 
   def broadcast_created
     broadcast_to_users("game_invite")
+    Notifier.game_invite(self)
   end
 
   def as_json(options = {})

@@ -50,6 +50,9 @@ const backend = {
   resetPassword(token, password) {
     return backendRequest("/auth/reset", { method: "POST", body: { token, password } });
   },
+  updateAccount(params) {
+    return backendRequest("/auth/update", { method: "POST", body: params });
+  },
   upsertUser(user) {
     return backendRequest("/users/upsert", { method: "POST", body: user });
   },
@@ -61,6 +64,11 @@ const backend = {
   },
   friends(userId) {
     return backendRequest(`/friends/index?user_id=${userId}`);
+  },
+  friendsMovieIds(userId, friendId) {
+    return backendRequest(
+      `/friends/movie_ids?user_id=${userId}&friend_id=${friendId}`
+    );
   },
   gameInvites(userId) {
     return backendRequest(`/game_invites?user_id=${userId}`);
@@ -79,6 +87,12 @@ const backend = {
   },
   declineGameInvite(inviteId, userId) {
     return backendRequest(`/game_invites/${inviteId}/decline`, {
+      method: "POST",
+      body: { user_id: userId },
+    });
+  },
+  nudgeGameInvite(inviteId, userId) {
+    return backendRequest(`/game_invites/${inviteId}/nudge`, {
       method: "POST",
       body: { user_id: userId },
     });
@@ -113,13 +127,75 @@ const backend = {
   gameDeck(gameId, userId) {
     return backendRequest(`/games/${gameId}/deck?user_id=${userId}`);
   },
-  swipe(gameId, userId, movieId, liked) {
+  swipe(gameId, userId, movieId, liked, mediaType = "movie") {
     return backendRequest(`/games/${gameId}/swipe`, {
       method: "POST",
-      body: { user_id: userId, movie_id: movieId, liked },
+      body: {
+        user_id: userId,
+        movie_id: movieId,
+        media_type: mediaType || "movie",
+        media_key: mediaKey(movieId, mediaType),
+        liked,
+      },
+    });
+  },
+  undoSwipe(gameId, userId, movieId, mediaType = "movie") {
+    return backendRequest(`/games/${gameId}/undo_swipe`, {
+      method: "POST",
+      body: {
+        user_id: userId,
+        movie_id: movieId,
+        media_type: mediaType || "movie",
+        media_key: mediaKey(movieId, mediaType),
+      },
+    });
+  },
+  shopCatalog(userId) {
+    const qs = userId ? `?user_id=${userId}` : "";
+    return backendRequest(`/shop/catalog${qs}`);
+  },
+  shopEntitlements(userId) {
+    return backendRequest(`/shop/entitlements?user_id=${userId}`);
+  },
+  createShopCheckout(productId, userId) {
+    return backendRequest("/shop/checkout", {
+      method: "POST",
+      body: { product_id: productId, user_id: userId },
+    });
+  },
+  confirmShopPurchase(sessionId, userId) {
+    return backendRequest("/shop/confirm", {
+      method: "POST",
+      body: { session_id: sessionId, user_id: userId },
+    });
+  },
+  demoShopUnlock(productId, userId) {
+    return backendRequest("/shop/demo_unlock", {
+      method: "POST",
+      body: { product_id: productId, user_id: userId },
     });
   },
 };
+
+function mediaKey(id, mediaType = "movie") {
+  if (id == null || id === "") return null;
+  const raw = String(id);
+  if (raw.includes(":")) return raw;
+  return `${mediaType === "tv" ? "tv" : "movie"}:${Number(raw)}`;
+}
+
+function parseMediaKey(value) {
+  const raw = String(value ?? "");
+  if (raw.includes(":")) {
+    const [media, id] = raw.split(":");
+    return { mediaType: media === "tv" ? "tv" : "movie", id: Number(id) };
+  }
+  return { mediaType: "movie", id: Number(raw) };
+}
+
+function normalizeMediaKeyList(values) {
+  return [...new Set((values || []).map((v) => mediaKey(parseMediaKey(v).id, parseMediaKey(v).mediaType)).filter(Boolean))];
+}
 
 const tmdb = {
   async movie(movieId) {
@@ -129,7 +205,8 @@ const tmdb = {
     });
     const response = await fetch(`https://api.themoviedb.org/3/movie/${movieId}?${params}`);
     if (!response.ok) throw new Error(`TMDB movie failed (${response.status})`);
-    return response.json();
+    const data = await response.json();
+    return { ...data, media_type: "movie" };
   },
 
   async tv(tvId) {
@@ -200,7 +277,18 @@ function buildDiscoverQuery(values) {
   const genreIds = (values.genres || []).map(Number);
   const wantsKids = genreIds.includes(10751) || genreIds.includes(10762);
   if (!values.includeKids && !wantsKids) {
+    params.exclude_kids = "true";
+    // Certification is primary; genre exclusion backs up recommendations.
     params.without_genres = mediaType === "movie" ? "10751" : "10751|10762";
+    params.certification_country = "US";
+    if (mediaType === "tv") {
+      params["certification.gte"] = "TV-PG";
+    } else if (mediaType === "movie") {
+      params["certification.gte"] = "PG";
+    }
+    // "both" applies per-media certs in DeckBuilder; keep genre backup here.
+  } else if (values.includeKids) {
+    params.include_kids = "true";
   }
 
   if (values.providers.length > 0) {
@@ -214,6 +302,10 @@ function buildDiscoverQuery(values) {
   }
   if (values.languages.length > 0) {
     params.with_original_language = values.languages.join("|");
+  }
+
+  if (values.curateKeys?.length) {
+    params.ww_curate_keys = values.curateKeys.join(",");
   }
 
   const path = mediaType === "tv" ? "discover/tv" : "discover/movie";

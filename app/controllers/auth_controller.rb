@@ -8,7 +8,7 @@ class AuthController < ApiController
   def me
     user = current_session_user
     if user
-      render json: user_with_email(user), status: :ok
+      render json: session_user_json(user), status: :ok
     else
       render json: { error: "Not logged in" }, status: :unauthorized
     end
@@ -23,14 +23,27 @@ class AuthController < ApiController
     return render_error("Password must be at least #{MIN_PASSWORD_LENGTH} characters.") if password.length < MIN_PASSWORD_LENGTH
     return render_error("That email already has an account — log in instead.") if User.exists?(email: email)
 
+    phone = params[:phone].presence
+    normalized_phone = nil
+    if phone.present?
+      normalized_phone = User.normalize_phone(phone)
+      return render_error("Enter a valid phone number (include country code, or 10-digit US).") unless normalized_phone
+      return render_error("That phone number is already on an account.") if User.exists?(phone: normalized_phone)
+    end
+
     user = User.find_by(id: params[:user_id], email: nil) || User.new(device_id: SecureRandom.uuid)
     user.username = params[:username] if params[:username].present?
     user.email = email
     user.password = password
+    user.phone = normalized_phone
+    user.notification_preferences = User::DEFAULT_NOTIFICATION_PREFERENCES.merge(
+      "sms_enabled" => normalized_phone.present?,
+      "email_enabled" => true
+    )
 
     if user.save
       set_session(user)
-      render json: user_with_email(user), status: :ok
+      render json: session_user_json(user), status: :ok
     else
       render_error(user.errors.full_messages.first || "Could not create the account.")
     end
@@ -41,7 +54,7 @@ class AuthController < ApiController
 
     if user&.password_digest.present? && user.authenticate(params[:password].to_s)
       set_session(user)
-      render json: user_with_email(user), status: :ok
+      render json: session_user_json(user), status: :ok
     else
       render json: { error: "Wrong email or password." }, status: :unauthorized
     end
@@ -78,7 +91,35 @@ class AuthController < ApiController
 
     user.update!(password: password, reset_token_digest: nil, reset_token_sent_at: nil)
     set_session(user)
-    render json: user_with_email(user), status: :ok
+    render json: session_user_json(user), status: :ok
+  end
+
+  # Update phone + notification preferences for the logged-in account.
+  def update
+    user = current_session_user
+    return render json: { error: "Not logged in" }, status: :unauthorized unless user
+
+    if params.key?(:phone)
+      raw = params[:phone].to_s.strip
+      if raw.blank?
+        user.phone = nil
+      else
+        normalized = User.normalize_phone(raw)
+        return render_error("Enter a valid phone number (include country code, or 10-digit US).") unless normalized
+        if User.where.not(id: user.id).exists?(phone: normalized)
+          return render_error("That phone number is already on an account.")
+        end
+        user.phone = normalized
+      end
+    end
+
+    user.assign_notification_preferences(params[:notification_preferences]) if params[:notification_preferences].present?
+
+    if user.save
+      render json: session_user_json(user), status: :ok
+    else
+      render_error(user.errors.full_messages.first || "Could not update account.")
+    end
   end
 
   private
@@ -98,8 +139,12 @@ class AuthController < ApiController
     }
   end
 
-  def user_with_email(user)
-    user.as_json.merge("email" => user.email)
+  def session_user_json(user)
+    user.as_json.merge(user.shop_json).merge(
+      "email" => user.email,
+      "phone" => user.phone,
+      "notification_preferences" => user.notification_preferences_with_defaults
+    )
   end
 
   def render_error(message)

@@ -33,4 +33,51 @@ class GamesControllerTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
     assert Game.exists?(@game.id)
   end
+
+  test "swipe stores media keys and undo removes them" do
+    @game.update!(mode: "endless", finished_at: nil)
+    player = players(:one)
+    player.update!(game: @game, user: @owner, liked_movie_ids: [], seen_movie_ids: [])
+
+    post swipe_game_url(@game), params: {
+      user_id: @owner.id,
+      movie_id: 550,
+      media_type: "movie",
+      liked: true
+    }, as: :json
+
+    assert_response :success
+    player.reload
+    assert_includes player.seen_movie_ids, "movie:550"
+    assert_includes player.liked_movie_ids, "movie:550"
+
+    post undo_swipe_game_url(@game), params: {
+      user_id: @owner.id,
+      movie_id: 550,
+      media_type: "movie"
+    }, as: :json
+
+    assert_response :success
+    player.reload
+    assert_not_includes player.seen_movie_ids, "movie:550"
+    assert_not_includes player.liked_movie_ids, "movie:550"
+  end
+
+  test "tv swipe uses tv media key so ids do not collide" do
+    @game.update!(mode: "endless", finished_at: nil)
+    player = players(:one)
+    player.update!(game: @game, user: @owner, liked_movie_ids: ["movie:550"], seen_movie_ids: ["movie:550"])
+
+    post swipe_game_url(@game), params: {
+      user_id: @owner.id,
+      movie_id: 550,
+      media_type: "tv",
+      liked: true
+    }, as: :json
+
+    assert_response :success
+    player.reload
+    assert_includes player.liked_movie_ids, "movie:550"
+    assert_includes player.liked_movie_ids, "tv:550"
+  end
 end

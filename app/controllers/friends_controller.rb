@@ -15,19 +15,21 @@ class FriendsController < ApiController
                    .where(players: { user_id: [friend.id, user.id] })
                    .pluck(:id)
 
-    friends_liked_movie_ids = Game.where(id: our_game_ids)
-                                  .joins(:players)
-                                  .where(players: { user_id: friend.id })
-                                  .pluck('players.liked_movie_ids')
-                                  .flatten
-                                  .uniq
+    friends_liked_movie_ids = MediaKey.normalize_list(
+      Game.where(id: our_game_ids)
+          .joins(:players)
+          .where(players: { user_id: friend.id })
+          .pluck("players.liked_movie_ids")
+          .flatten
+    )
 
-    my_liked_movie_ids = Game.where(id: our_game_ids)
-                             .joins(:players)
-                             .where(players: { user_id: user.id })
-                             .pluck('players.liked_movie_ids')
-                             .flatten
-                             .uniq
+    my_liked_movie_ids = MediaKey.normalize_list(
+      Game.where(id: our_game_ids)
+          .joins(:players)
+          .where(players: { user_id: user.id })
+          .pluck("players.liked_movie_ids")
+          .flatten
+    )
 
     our_liked_movie_ids = my_liked_movie_ids & friends_liked_movie_ids
 

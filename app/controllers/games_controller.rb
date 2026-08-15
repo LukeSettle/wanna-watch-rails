@@ -76,7 +76,7 @@ class GamesController < ApiController
           game.update!(
             deck: deck,
             deck_round: game.load_more_count,
-            dealt_movie_ids: (game.dealt_movie_ids.to_a + deck.map { |m| m["id"] }).uniq
+            dealt_movie_ids: (game.dealt_movie_ids.to_a + deck.map { |m| MediaKey.for(m) }).uniq
           )
         end
       end
@@ -93,16 +93,18 @@ class GamesController < ApiController
     player = game.players.find_by(user_id: params[:user_id])
     return render json: { error: "Join the game first" }, status: :unprocessable_entity unless player
 
-    movie_id = params[:movie_id].to_i
+    key = swipe_media_key
+    return render json: { error: "Invalid title" }, status: :unprocessable_entity unless key
+
     liked = ActiveModel::Type::Boolean.new.cast(params[:liked])
 
     player.update!(
-      seen_movie_ids: (player.seen_movie_ids.to_a + [movie_id]).uniq,
-      liked_movie_ids: liked ? (player.liked_movie_ids.to_a + [movie_id]).uniq : player.liked_movie_ids
+      seen_movie_ids: (player.seen_movie_ids.to_a + [key]).uniq,
+      liked_movie_ids: liked ? (player.liked_movie_ids.to_a + [key]).uniq : player.liked_movie_ids
     )
 
     matched = liked && game.players.count > 1 &&
-              game.players.reload.all? { |p| p.liked_movie_ids.to_a.include?(movie_id) }
+              game.players.reload.all? { |p| p.liked_movie_ids.to_a.include?(key) }
 
     if matched
       # First-match mode: the first movie everyone likes ends the game.
@@ -111,17 +113,39 @@ class GamesController < ApiController
         game.broadcast_game_index_updated
       end
 
+      media_type, movie_id = MediaKey.parse(key)
       ActionCable.server.broadcast(
         "game_#{game.id}",
         {
           type: 'match',
           movie_id: movie_id,
+          media_type: media_type,
+          media_key: key,
           game: game.reload.to_json(include: { players: { include: :user } })
         }
       )
+      Notifier.match_alert(game, movie_id)
     end
 
-    render json: { matched: matched }, status: :ok
+    render json: { matched: matched, media_key: key }, status: :ok
+  end
+
+  # One-level undo for continuous modes: remove the title from seen/liked.
+  def undo_swipe
+    game = Game.find(params[:id])
+    player = game.players.find_by(user_id: params[:user_id])
+    return render json: { error: "Join the game first" }, status: :unprocessable_entity unless player
+    return render json: { error: "Game already finished" }, status: :unprocessable_entity if game.finished_at.present?
+
+    key = swipe_media_key
+    return render json: { error: "Invalid title" }, status: :unprocessable_entity unless key
+
+    player.update!(
+      seen_movie_ids: player.seen_movie_ids.to_a - [key],
+      liked_movie_ids: player.liked_movie_ids.to_a - [key]
+    )
+
+    render json: { media_key: key }, status: :ok
   end
 
   def join
@@ -180,13 +204,36 @@ class GamesController < ApiController
     user = User.find(params[:user_id])
 
     game.player_finished(user, params[:liked_movie_ids] || [], params[:seen_movie_ids] || [])
-    game.finish if game.reload.all_players_finished?
+    just_finished = false
+    if game.reload.all_players_finished? && game.finished_at.nil?
+      game.finish
+      just_finished = true
+    end
     broadcast_to_game(game, "#{user.username} is finished")
+
+    if just_finished
+      match_id = shared_liked_media_keys(game).first
+      Notifier.match_alert(game, match_id) if match_id
+    end
 
     render_game(game)
   end
 
   private
+
+  def swipe_media_key
+    MediaKey.normalize(
+      params[:media_key].presence || params[:movie_id],
+      params[:media_type]
+    )
+  end
+
+  def shared_liked_media_keys(game)
+    lists = game.players.map { |p| p.liked_movie_ids.to_a }
+    return [] if lists.size < 2
+
+    lists.reduce(:&)
+  end
 
   # One growing shared list per endless game. Each player is served whatever
   # they haven't seen yet; when anyone runs low the list is extended with a
@@ -196,21 +243,22 @@ class GamesController < ApiController
     movies = []
 
     game.with_lock do
-      seen = player.reload.seen_movie_ids.to_a
-      unseen = game.deck.to_a.reject { |m| seen.include?(m["id"]) }
+      seen = player.reload.seen_movie_ids.to_a.to_set
+      unseen = game.deck.to_a.reject { |m| seen.include?(MediaKey.for(m)) }
 
       if unseen.size < 10
         batch = DeckBuilder.new(game).build
         players = game.players.reload
         kept = game.deck.to_a.select do |m|
-          players.any? { |p| !p.seen_movie_ids.to_a.include?(m["id"]) }
+          key = MediaKey.for(m)
+          players.any? { |p| !p.seen_movie_ids.to_a.include?(key) }
         end
         game.update!(
           deck: kept + batch,
           load_more_count: game.load_more_count + 1,
-          dealt_movie_ids: (game.dealt_movie_ids.to_a + batch.map { |m| m["id"] }).uniq
+          dealt_movie_ids: (game.dealt_movie_ids.to_a + batch.map { |m| MediaKey.for(m) }).uniq
         )
-        unseen = game.deck.to_a.reject { |m| seen.include?(m["id"]) }
+        unseen = game.deck.to_a.reject { |m| seen.include?(MediaKey.for(m)) }
       end
 
       movies = unseen.first(20)

@@ -68,6 +68,17 @@ class GameInvitesController < ApiController
     render json: { error: "Could not decline invite" }, status: :unprocessable_entity
   end
 
+  def nudge
+    invite = GameInvite.find(params[:id])
+    user = User.find(params[:user_id])
+
+    return render json: { error: "Only the inviter can nudge" }, status: :forbidden unless invite.inviter_id == user.id
+    return render json: { error: "Invite is no longer pending" }, status: :unprocessable_entity unless invite.pending?
+
+    Notifier.game_nudge(invite)
+    render json: { nudged: true }, status: :ok
+  end
+
   private
 
   def can_invite?(game, user)

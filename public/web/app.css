@@ -432,12 +432,130 @@ select option { color: var(--ink); }
 
 .list-card h2 { margin: 0 0 10px; font-size: 1.05rem; }
 
+.section-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.section-heading h2 {
+  margin: 0;
+}
+
+.library-home-card .library-home-copy {
+  margin: 0 0 12px;
+}
+
+.home-settled-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(94, 208, 255, 0.35);
+  background: rgba(94, 208, 255, 0.1);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.home-settled-chip .settled-label {
+  margin: 0;
+}
+
+.home-poster-row {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  margin: 0 -4px;
+  padding-left: 4px;
+  padding-right: 4px;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+}
+
+.home-poster-card {
+  position: relative;
+  flex: 0 0 92px;
+  width: 92px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  scroll-snap-align: start;
+  text-align: left;
+}
+
+.home-poster-card img,
+.home-poster-fallback {
+  display: block;
+  width: 92px;
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.home-poster-fallback {
+  display: grid;
+  place-items: center;
+  font-size: 1.4rem;
+  font-weight: 800;
+}
+
+.home-poster-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(46, 204, 113, 0.92);
+  color: #04120a;
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.home-poster-title {
+  display: block;
+  margin-top: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .game-row {
   display: flex;
   align-items: stretch;
-  gap: 6px;
   width: 100%;
   margin-bottom: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+button.game-row {
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--text);
+  padding: 12px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  text-align: left;
 }
 
 .game-row-main {
@@ -447,14 +565,30 @@ select option { color: var(--ink); }
   gap: 10px;
   flex: 1;
   min-width: 0;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 10px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
   color: var(--text);
   padding: 12px;
   cursor: pointer;
   font-size: 0.95rem;
   text-align: left;
+}
+
+.game-row-info {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.game-row-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .game-remove {
@@ -463,9 +597,10 @@ select option { color: var(--ink); }
   justify-content: center;
   flex-shrink: 0;
   width: 44px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 10px;
+  background: transparent;
+  border: none;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0;
   color: var(--muted);
   cursor: pointer;
   padding: 0;
@@ -474,7 +609,7 @@ select option { color: var(--ink); }
 .game-remove:hover,
 .game-remove:focus-visible {
   color: #f07178;
-  border-color: rgba(240, 113, 120, 0.45);
+  background: rgba(240, 113, 120, 0.08);
 }
 
 .game-remove:disabled {
@@ -483,8 +618,25 @@ select option { color: var(--ink); }
 }
 
 .game-code { font-weight: 800; letter-spacing: 2px; }
-.game-players { flex: 1; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.game-resume { color: var(--accent-2); font-weight: 700; white-space: nowrap; }
+.game-players {
+  max-width: 100%;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+}
+.game-resume {
+  color: var(--accent-2);
+  font-weight: 700;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+@media (max-width: 420px) {
+  .game-resume-label { display: none; }
+  .game-resume { font-size: 1.15rem; line-height: 1; }
+}
 
 .player-row {
   display: flex;
@@ -657,7 +809,8 @@ select option { color: var(--ink); }
 .swipe-actions {
   display: flex;
   justify-content: center;
-  gap: 40px;
+  align-items: center;
+  gap: 28px;
   padding: 6px 0;
 }
 
@@ -676,6 +829,59 @@ select option { color: var(--ink); }
 .action-btn:active { transform: scale(0.92); }
 .action-btn.nope { background: #fff; color: var(--nope); }
 .action-btn.like { background: var(--like); color: #fff; }
+.action-btn.undo {
+  width: 48px;
+  height: 48px;
+  font-size: 1.25rem;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--ink);
+}
+.action-btn.undo:disabled {
+  opacity: 0.35;
+  cursor: default;
+  box-shadow: none;
+}
+
+.match-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.match-actions.compact {
+  margin-top: 8px;
+}
+
+.match-actions .btn,
+.match-actions a.btn {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.result-card.actionable,
+.result-card:has(.match-actions) {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding-bottom: 10px;
+}
+
+.result-card-main {
+  background: transparent;
+  border: none;
+  color: inherit;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+}
+
+.account-nudge {
+  margin-bottom: 4px;
+}
 
 /* ---------- results ---------- */
 
@@ -815,7 +1021,7 @@ select option { color: var(--ink); }
 .modal-header { display: flex; justify-content: flex-end; }
 .modal-poster { width: 100%; border-radius: 12px; }
 
-/* ---------- previous games ---------- */
+/* ---------- movie library ---------- */
 
 .history-header {
   display: flex;
@@ -841,6 +1047,11 @@ select option { color: var(--ink); }
   margin: 10px 0 14px;
 }
 
+.library-tabs .tab {
+  font-size: 0.88rem;
+  padding: 9px 10px;
+}
+
 .tab {
   flex: 1;
   background: rgba(255, 255, 255, 0.08);
@@ -856,6 +1067,77 @@ select option { color: var(--ink); }
 .tab.active {
   background: var(--accent);
   border-color: var(--accent);
+}
+
+.library-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.library-toolbar .muted {
+  margin: 0;
+}
+
+.library-friend-label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 700;
+}
+
+.library-friend-select {
+  width: 100%;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.settled-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 14px;
+}
+
+.settled-label {
+  margin: 0 0 2px;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent-2);
+  font-weight: 700;
+}
+
+.settled-card strong {
+  font-size: 1.05rem;
+}
+
+.settled-card .muted {
+  margin: 4px 0 0;
+}
+
+.settled-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+#sift-with-friend {
+  width: 100%;
+  margin-bottom: 6px;
+}
+
+#settle-random-shared {
+  margin: 8px 0 12px;
 }
 
 /* ---------- misc ---------- */
@@ -983,9 +1265,128 @@ select option { color: var(--ink); }
 .account-card .btn { flex-shrink: 0; }
 .account-card p { margin: 4px 0 0; }
 
+.settings-card h2 { margin: 0; }
+.settings-card .check-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 500;
+}
+.settings-card .check-row input { width: auto; margin: 0; }
+
 .inline-link {
   padding: 0;
   font-size: inherit;
+}
+
+/* ---------- shop / ads / flair ---------- */
+
+.ad-slot {
+  border: 1px dashed rgba(255, 255, 255, 0.22);
+  border-radius: var(--radius);
+  background: rgba(0, 0, 0, 0.18);
+  padding: 12px 14px;
+}
+
+.ad-slot-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.9rem;
+}
+
+.ad-eyebrow {
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.ad-slot strong { font-size: 0.95rem; }
+.ad-slot p { margin: 0; color: var(--muted); font-size: 0.85rem; }
+
+.shop-screen .shop-products {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.shop-product h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.shop-product-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.shop-tagline {
+  margin: 4px 0 0;
+  color: var(--accent-2);
+  font-size: 0.85rem;
+}
+
+.shop-price {
+  font-weight: 800;
+  font-size: 1.15rem;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.shop-actions { margin-top: 10px; }
+
+.shop-status, .shop-legal { font-size: 0.85rem; }
+
+.owned-pill {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(46, 204, 113, 0.2);
+  color: var(--like);
+}
+
+.flair-badge {
+  display: inline-block;
+  margin-left: 4px;
+  font-size: 0.95em;
+  vertical-align: middle;
+}
+
+.vault-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.vault-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.9rem;
+}
+
+.deep-dive-block {
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  padding-top: 10px;
+  margin-top: 4px;
+}
+
+.deep-tagline {
+  font-style: italic;
+  margin: 0;
+  color: var(--ink);
 }
 
 @media (min-width: 700px) {

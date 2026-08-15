@@ -64,7 +64,7 @@ class GamesController < ApiController
   def deck
     game = Game.find(params[:id])
 
-    if game.endless?
+    if game.continuous?
       player = game.players.find_by(user_id: params[:user_id])
       return render json: { error: "Join the game first" }, status: :unprocessable_entity unless player
 
@@ -105,6 +105,12 @@ class GamesController < ApiController
               game.players.reload.all? { |p| p.liked_movie_ids.to_a.include?(movie_id) }
 
     if matched
+      # First-match mode: the first movie everyone likes ends the game.
+      if game.first_match?
+        game.finish
+        game.broadcast_game_index_updated
+      end
+
       ActionCable.server.broadcast(
         "game_#{game.id}",
         {

@@ -232,6 +232,7 @@ select option { color: var(--ink); }
 
 .mode-options {
   display: flex;
+  flex-direction: column;
   gap: 10px;
 }
 
@@ -326,6 +327,66 @@ select option { color: var(--ink); }
 @keyframes bannerIn {
   from { transform: translate(-50%, -120%); }
   to { transform: translate(-50%, 0); }
+}
+
+.fun-banner {
+  background: linear-gradient(135deg, #2a1745, #471f4e);
+  color: var(--text);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  font-weight: 600;
+}
+
+/* ---------- deck wiggle & confetti ---------- */
+
+.deck.wiggle { animation: wiggle 0.8s ease; }
+
+@keyframes wiggle {
+  0%, 100% { transform: rotate(0); }
+  20% { transform: rotate(-2deg); }
+  40% { transform: rotate(2deg); }
+  60% { transform: rotate(-1.2deg); }
+  80% { transform: rotate(1.2deg); }
+}
+
+.confetti-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 60;
+}
+
+.confetti {
+  position: absolute;
+  top: -20px;
+  border-radius: 2px;
+  animation: confettiFall linear infinite;
+}
+
+@keyframes confettiFall {
+  0% { transform: translateY(-4vh) rotate(0deg); opacity: 1; }
+  85% { opacity: 1; }
+  100% { transform: translateY(105vh) rotate(720deg); opacity: 0; }
+}
+
+.final-movie {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  font-size: 1.15rem;
+}
+
+.final-movie img {
+  width: min(240px, 55vw);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  animation: popIn 0.45s ease;
+}
+
+@keyframes popIn {
+  from { transform: scale(0.7); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
 }
 
 .chips.single .chip.selected {

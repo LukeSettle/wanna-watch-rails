@@ -406,6 +406,10 @@ select option { color: var(--ink); }
   gap: 8px;
 }
 
+#provider-more {
+  margin-top: 10px;
+}
+
 .chips.single .chip.selected {
   background: var(--accent-2);
   border-color: var(--accent-2);

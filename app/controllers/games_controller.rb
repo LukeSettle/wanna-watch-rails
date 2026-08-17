@@ -291,7 +291,10 @@ class GamesController < ApiController
       game.assign_attributes(game_params)
 
       game.save!
-      user.update!(providers: params[:providers]) if params[:providers]
+      if params[:providers]
+        providers = Array(params[:providers]).map { |id| DeckBuilder::PROVIDER_ID_ALIASES[id.to_s] || id.to_s }.uniq
+        user.update!(providers: providers)
+      end
 
       true
     rescue ActiveRecord::RecordInvalid => e

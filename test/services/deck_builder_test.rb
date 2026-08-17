@@ -50,6 +50,55 @@ class DeckBuilderTest < ActiveSupport::TestCase
     assert captured.all? { |p| p["with_watch_monetization_types"] == "flatrate" }
   end
 
+  test "legacy apple tv store id remaps to apple tv subscription" do
+    query = JSON.parse(@game.query)
+    query["params"]["with_watch_providers"] = "2"
+    @game.update!(query: query.to_json)
+
+    apple_title = {
+      "id" => 3501,
+      "title" => "On Apple TV",
+      "poster_path" => "/a.jpg",
+      "adult" => false,
+      "release_date" => "2021-01-01",
+      "vote_average" => 7.5,
+      "vote_count" => 5000,
+      "genre_ids" => [18],
+    }
+    store_only = {
+      "id" => 3502,
+      "title" => "Rent Only",
+      "poster_path" => "/b.jpg",
+      "adult" => false,
+      "release_date" => "2021-01-01",
+      "vote_average" => 7.5,
+      "vote_count" => 5000,
+      "genre_ids" => [18],
+    }
+
+    captured = []
+    with_tmdb(
+      discover: ->(params, media: "movie") {
+        captured << params
+        [store_only, apple_title]
+      },
+      watch_providers: ->(id, media: "movie") {
+        if id == 3501
+          { "US" => { "flatrate" => [{ "provider_id" => 350 }] } }
+        else
+          { "US" => { "rent" => [{ "provider_id" => 2 }], "buy" => [{ "provider_id" => 2 }] } }
+        end
+      }
+    ) do
+      deck = DeckBuilder.new(@game).build
+      assert deck.any?
+      assert deck.all? { |m| m["id"] == 3501 }
+    end
+
+    assert captured.any?
+    assert captured.all? { |p| p["with_watch_providers"] == "350" }
+  end
+
   test "deck excludes titles not on selected providers" do
     on_netflix = {
       "id" => 101,

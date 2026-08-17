@@ -1450,9 +1450,8 @@ async function renderCreateScreen() {
           <div class="field-block">
             <label>Where do you watch?</label>
             <p class="hint">Optional — we'll remember your picks.</p>
-            <div class="chips" id="provider-chips">
-              ${PROVIDERS.map((p) => `<button type="button" class="chip" data-value="${p.code}">${esc(p.title)}</button>`).join("")}
-            </div>
+            <div class="chips" id="provider-chips"><span class="muted">Loading services…</span></div>
+            <button type="button" class="btn btn-ghost btn-small" id="provider-more" hidden>More services</button>
           </div>
         </section>
 
@@ -1603,8 +1602,48 @@ async function renderCreateScreen() {
   });
   syncRuntimeVisibility();
 
-  (state.user.providers || []).forEach((code) => {
-    document.querySelector(`#provider-chips .chip[data-value="${code}"]`)?.classList.add("selected");
+  const savedProviderIds = new Set(normalizeProviderIds(state.user.providers || []));
+  let providerList = null;
+  let showingAllProviders = false;
+
+  function renderProviderChips() {
+    const container = document.getElementById("provider-chips");
+    const moreBtn = document.getElementById("provider-more");
+    if (!container || !providerList) return;
+
+    const list = showingAllProviders ? providerList.all : providerList.featured;
+    container.innerHTML = list
+      .map((p) => `<button type="button" class="chip" data-value="${p.code}">${esc(p.title)}</button>`)
+      .join("");
+
+    container.querySelectorAll(".chip").forEach((chip) => {
+      if (savedProviderIds.has(chip.dataset.value)) chip.classList.add("selected");
+    });
+
+    if (moreBtn) {
+      const hasMore = providerList.all.length > providerList.featured.length;
+      moreBtn.hidden = !hasMore;
+      moreBtn.textContent = showingAllProviders ? "Fewer services" : "More services";
+    }
+  }
+
+  document.getElementById("provider-more")?.addEventListener("click", () => {
+    // Sync selection state from currently visible chips before re-render.
+    const visibleCodes = [...document.querySelectorAll("#provider-chips .chip")].map((c) => c.dataset.value);
+    visibleCodes.forEach((code) => savedProviderIds.delete(code));
+    document.querySelectorAll("#provider-chips .chip.selected").forEach((chip) => {
+      savedProviderIds.add(chip.dataset.value);
+    });
+    showingAllProviders = !showingAllProviders;
+    renderProviderChips();
+  });
+
+  loadProviders().then((list) => {
+    providerList = list;
+    renderProviderChips();
+  }).catch(() => {
+    const container = document.getElementById("provider-chips");
+    if (container) container.innerHTML = `<span class="muted">Services unavailable</span>`;
   });
 
   document.getElementById("cancel-create").addEventListener("click", () => {
@@ -1633,7 +1672,7 @@ async function renderCreateScreen() {
 
     const values = {
       mode: document.querySelector(".mode-option.selected")?.dataset.mode || "first_match",
-      providers: selected("provider-chips"),
+      providers: normalizeProviderIds(selected("provider-chips")),
       genres: selected("genre-chips"),
       languages: selected("language-chips"),
       userScoreRange: [Number(rating?.dataset.min || 0), 10],
@@ -1895,7 +1934,7 @@ function watchTonightUrl(movie) {
 function preferredFlatrateProviders(movie) {
   const flatrate = movie["watch/providers"]?.results?.US?.flatrate || [];
   if (!flatrate.length) return [];
-  const userCodes = new Set((state.user?.providers || []).map(String));
+  const userCodes = new Set(normalizeProviderIds(state.user?.providers || []));
   const preferred = flatrate.filter((p) => userCodes.has(String(p.provider_id)));
   return preferred.length ? preferred : flatrate;
 }

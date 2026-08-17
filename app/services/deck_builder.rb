@@ -22,6 +22,12 @@ class DeckBuilder
   FAMILY_GENRE = 10751
   KIDS_GENRE = 10762
 
+  # Legacy TMDB IDs users may still have in saved prefs / game queries.
+  PROVIDER_ID_ALIASES = {
+    "2" => "350", # Apple TV Store → Apple TV
+    "531" => "2303", # retired Paramount Plus → Paramount Plus Premium
+  }.freeze
+
   def initialize(game)
     @game = game
     @query_params = parse_query_params
@@ -215,6 +221,7 @@ class DeckBuilder
     }
 
     if provider_filter?
+      params["with_watch_providers"] = selected_provider_ids.join("|")
       params["watch_region"] = params["watch_region"].presence || "US"
       params["with_watch_monetization_types"] = "flatrate"
     end
@@ -340,7 +347,10 @@ class DeckBuilder
   end
 
   def selected_provider_ids
-    @selected_provider_ids ||= @query_params["with_watch_providers"].to_s.split(/[|,]/).map(&:presence).compact
+    @selected_provider_ids ||= begin
+      raw = @query_params["with_watch_providers"].to_s.split(/[|,]/).map(&:presence).compact
+      raw.map { |id| PROVIDER_ID_ALIASES[id] || id }.uniq
+    end
   end
 
   # TMDB discover provider filters are approximate; verify subscription

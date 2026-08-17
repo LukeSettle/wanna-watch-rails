@@ -40,4 +40,10 @@ class TmdbClient
     path = media.to_s == "tv" ? "/tv/#{id}/watch/providers" : "/movie/#{id}/watch/providers"
     get(path)["results"] || {}
   end
+
+  # Catalog of watch providers for a region (JustWatch via TMDB).
+  def self.watch_provider_list(media: "movie", watch_region: "US")
+    path = media.to_s == "tv" ? "/watch/providers/tv" : "/watch/providers/movie"
+    get(path, watch_region: watch_region, language: "en-US")["results"] || []
+  end
 end

@@ -4,16 +4,29 @@
 
 const TMDB_API_KEY = "fd1efe23da588e99056fdb264ca89bbd";
 
-const PROVIDERS = [
+// Stale IDs users may still have saved (rent/buy or retired catalog entries).
+const PROVIDER_ID_ALIASES = {
+  "2": "350", // Apple TV Store → Apple TV (subscription)
+  "531": "2303", // retired Paramount Plus → Paramount Plus Premium
+};
+
+// Preferred chip order. Names/logos come from TMDB at runtime.
+const FEATURED_PROVIDER_IDS = ["8", "1899", "15", "337", "386", "9", "2303", "350"];
+
+const PROVIDERS_FALLBACK = [
   { title: "Netflix", code: "8" },
   { title: "Max", code: "1899" },
   { title: "Hulu", code: "15" },
-  { title: "Disney+", code: "337" },
-  { title: "Peacock", code: "386" },
+  { title: "Disney Plus", code: "337" },
+  { title: "Peacock Premium", code: "386" },
   { title: "Amazon Prime Video", code: "9" },
-  { title: "Paramount Plus", code: "531" },
-  { title: "Apple TV", code: "2" },
+  { title: "Paramount Plus Premium", code: "2303" },
+  { title: "Apple TV", code: "350" },
 ];
+
+function normalizeProviderIds(ids) {
+  return [...new Set((ids || []).map(String).map((id) => PROVIDER_ID_ALIASES[id] || id))];
+}
 
 async function backendRequest(path, { method = "GET", body } = {}) {
   const response = await fetch(path, {
@@ -235,10 +248,58 @@ const tmdb = {
     return (await response.json()).genres;
   },
 
+  async watchProviders(region = "US") {
+    const params = new URLSearchParams({
+      api_key: TMDB_API_KEY,
+      language: "en-US",
+      watch_region: region,
+    });
+    const response = await fetch(`https://api.themoviedb.org/3/watch/providers/movie?${params}`);
+    if (!response.ok) throw new Error(`TMDB providers failed (${response.status})`);
+    return (await response.json()).results || [];
+  },
+
   async details(id, mediaType = "movie") {
     return mediaType === "tv" ? this.tv(id) : this.movie(id);
   },
 };
+
+let providersCache = null;
+
+async function loadProviders() {
+  if (providersCache) return providersCache;
+
+  try {
+    const results = await tmdb.watchProviders("US");
+    const byId = new Map(results.map((p) => [String(p.provider_id), p]));
+    const featuredSet = new Set(FEATURED_PROVIDER_IDS);
+
+    const featured = FEATURED_PROVIDER_IDS.map((id) => {
+      const p = byId.get(id);
+      if (p) return { title: p.provider_name, code: id, logo_path: p.logo_path };
+      const fallback = PROVIDERS_FALLBACK.find((item) => item.code === id);
+      return fallback ? { ...fallback } : null;
+    }).filter(Boolean);
+    const rest = results
+      .filter((p) => !featuredSet.has(String(p.provider_id)))
+      .sort((a, b) => (a.display_priority ?? 999) - (b.display_priority ?? 999))
+      .map((p) => ({
+        title: p.provider_name,
+        code: String(p.provider_id),
+        logo_path: p.logo_path,
+      }));
+
+    providersCache = { featured, all: [...featured, ...rest] };
+  } catch {
+    providersCache = { featured: PROVIDERS_FALLBACK, all: PROVIDERS_FALLBACK };
+  }
+
+  return providersCache;
+}
+
+// Back-compat alias used by older call sites.
+const PROVIDERS = PROVIDERS_FALLBACK;
+
 
 // Builds the discover query stored on the game (deck builder reads params).
 function buildDiscoverQuery(values) {
@@ -291,8 +352,9 @@ function buildDiscoverQuery(values) {
     params.include_kids = "true";
   }
 
-  if (values.providers.length > 0) {
-    params.with_watch_providers = values.providers.join("|");
+  const providerIds = normalizeProviderIds(values.providers);
+  if (providerIds.length > 0) {
+    params.with_watch_providers = providerIds.join("|");
     params.watch_region = "US";
     // Subscription streaming only — without this, discover also matches rent/buy.
     params.with_watch_monetization_types = "flatrate";

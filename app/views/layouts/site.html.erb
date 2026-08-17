@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#14101f">
+  <meta name="google-adsense-account" content="ca-pub-2455305491841820">
+  <title><%= content_for?(:title) ? yield(:title) : "WannaWatch" %></title>
+  <meta name="description" content="<%= content_for?(:meta_description) ? yield(:meta_description) : "Swipe movies with friends and find one you all wanna watch." %>">
+  <link rel="icon" href="/logo.png">
+  <link rel="stylesheet" href="/web/site.css?v=1">
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-9MM8NTLTNP"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-9MM8NTLTNP');
+  </script>
+  <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2455305491841820"
+     crossorigin="anonymous"></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="site-brand" href="/">
+      <img src="/logo.png" alt="">
+      <span>WannaWatch</span>
+    </a>
+    <nav class="site-nav" aria-label="Site">
+      <a href="/how-it-works">How it works</a>
+      <a href="/about">About</a>
+      <a href="/contact">Contact</a>
+      <a href="/privacy">Privacy</a>
+      <a class="site-nav-play" href="/">Play</a>
+    </nav>
+  </header>
+
+  <main class="site-main">
+    <%= yield %>
+  </main>
+
+  <%= render "pages/footer" %>
+</body>
+</html>

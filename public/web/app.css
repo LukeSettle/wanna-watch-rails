@@ -53,6 +53,44 @@ body {
   flex-direction: column;
 }
 
+/* Below the play UI — reachable by scroll, hidden while swipe locks the page. */
+.doc-footer {
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 8px 20px 28px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.doc-footer p { margin: 0 0 8px; }
+
+.doc-footer nav {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+
+.doc-footer a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.doc-footer a:hover { color: var(--text); }
+
+.doc-noscript {
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 24px 20px;
+  text-align: center;
+}
+
+body.lock-scroll .doc-footer {
+  display: none;
+}
+
 .screen {
   flex: 1;
   display: flex;

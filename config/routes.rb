@@ -45,5 +45,10 @@ Rails.application.routes.draw do
   post 'stripe/webhook', to: 'stripe_webhooks#create'
 
   get 'home', to: 'application#home'
+  get 'about', to: 'pages#about'
+  get 'how-it-works', to: 'pages#how_it_works'
+  get 'privacy', to: 'pages#privacy'
+  get 'contact', to: 'pages#contact'
+
   root to: 'web#show'
 end

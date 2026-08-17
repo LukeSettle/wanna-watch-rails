@@ -1286,28 +1286,17 @@ button.game-row {
 /* ---------- shop / ads / flair ---------- */
 
 .ad-slot {
-  border: 1px dashed rgba(255, 255, 255, 0.22);
   border-radius: var(--radius);
   background: rgba(0, 0, 0, 0.18);
-  padding: 12px 14px;
+  padding: 8px;
+  min-height: 90px;
+  overflow: hidden;
 }
 
-.ad-slot-inner {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 0.9rem;
+.ad-slot .adsbygoogle {
+  display: block;
+  min-height: 90px;
 }
-
-.ad-eyebrow {
-  font-size: 0.7rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.ad-slot strong { font-size: 0.95rem; }
-.ad-slot p { margin: 0; color: var(--muted); font-size: 0.85rem; }
 
 .shop-screen .shop-products {
   display: flex;

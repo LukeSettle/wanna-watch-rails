@@ -7,6 +7,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="google-adsense-account" content="ca-pub-2455305491841820">
   <!-- Google tag (gtag.js) -->
   <script async src="https://www.googletagmanager.com/gtag/js?id=G-9MM8NTLTNP"></script>
   <script>
@@ -16,13 +17,25 @@
 
     gtag('config', 'G-9MM8NTLTNP');
   </script>
+  <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2455305491841820"
+     crossorigin="anonymous"></script>
+  <script>
+    window.WW_ADS = {
+      client: "ca-pub-2455305491841820",
+      // Optional: paste Display ad unit IDs from AdSense → Ads → By ad unit
+      slots: {
+        home: "<%= ENV.fetch('ADSENSE_SLOT_HOME', '') %>",
+        results: "<%= ENV.fetch('ADSENSE_SLOT_RESULTS', '') %>"
+      }
+    };
+  </script>
   <title>WannaWatch — Swipe movies with friends</title>
   <meta name="description" content="Tinder-style movie matching. Swipe through the same list as your friends and find a movie you all wanna watch.">
   <link rel="icon" href="/logo.png">
   <meta property="og:title" content="WannaWatch">
   <meta property="og:description" content="Swipe movies with friends and find one you all wanna watch.">
   <meta property="og:image" content="/logo.png">
-  <link rel="stylesheet" href="/web/app.css?v=15">
+  <link rel="stylesheet" href="/web/app.css?v=16">
 </head>
 <body>
   <div id="app">
@@ -41,9 +54,9 @@
       </div>
     </div>
   </div>
-  <script src="/web/api.js?v=15"></script>
-  <script src="/web/cable.js?v=15"></script>
-  <script src="/web/shop.js?v=15"></script>
-  <script src="/web/app.js?v=15"></script>
+  <script src="/web/api.js?v=16"></script>
+  <script src="/web/cable.js?v=16"></script>
+  <script src="/web/shop.js?v=16"></script>
+  <script src="/web/app.js?v=16"></script>
 </body>
 </html>

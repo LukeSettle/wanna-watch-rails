@@ -1,22 +1,5 @@
 // Shop / Extras + light ad slots. Loaded after api.js; used by app.js.
 
-const AD_CREATIVES = [
-  {
-    eyebrow: "Sponsored",
-    title: "Your cozy streaming night starts here",
-    body: "Placeholder ad — swap in real creatives via ADSENSE_CLIENT later.",
-    cta: "Learn more",
-    href: "#shop",
-  },
-  {
-    eyebrow: "Indie tip",
-    title: "WannaWatch is free to play with friends",
-    body: "Optional Extras keep the lights on. No swipe limits. Ever.",
-    cta: "See Extras",
-    href: "#shop",
-  },
-];
-
 function isAdFree() {
   return !!(state.user?.ad_free || state.user?.entitlements?.ad_free || state.user?.supporter);
 }
@@ -40,30 +23,40 @@ function usernameWithFlair(user = state.user) {
   return `${esc(user.username || "Player")}${flairBadgeHtml(user)}`;
 }
 
+function adsenseClient() {
+  return window.WW_ADS?.client || "";
+}
+
+function adsenseSlot(placement) {
+  const slots = window.WW_ADS?.slots || {};
+  return slots[placement] || "";
+}
+
 function adSlotHtml(placement = "home") {
   if (isAdFree()) return "";
-  const creative = AD_CREATIVES[placement === "results" ? 1 : 0];
-  const network = window.WW_ADS?.client;
+
+  const client = adsenseClient();
+  const slot = adsenseSlot(placement);
+  if (!client || !slot) return "";
+
   return `
-    <aside class="ad-slot" data-placement="${esc(placement)}" data-ad-client="${esc(network || "")}">
-      <div class="ad-slot-inner">
-        <span class="ad-eyebrow">${esc(creative.eyebrow)}</span>
-        <strong>${esc(creative.title)}</strong>
-        <p>${esc(creative.body)}</p>
-        <button type="button" class="link ad-cta" data-ad-href="${esc(creative.href)}">${esc(creative.cta)}</button>
-      </div>
+    <aside class="ad-slot" data-placement="${esc(placement)}">
+      <ins class="adsbygoogle"
+           style="display:block"
+           data-ad-client="${esc(client)}"
+           data-ad-slot="${esc(slot)}"
+           data-ad-format="auto"
+           data-full-width-responsive="true"></ins>
     </aside>`;
 }
 
 function bindAdSlots(root = document) {
-  root.querySelectorAll(".ad-cta").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      if (btn.dataset.adHref === "#shop") {
-        state.view = "shop";
-        lastRenderKey = null;
-        render();
-      }
-    });
+  root.querySelectorAll("ins.adsbygoogle:not([data-adsbygoogle-status])").forEach(() => {
+    try {
+      (window.adsbygoogle = window.adsbygoogle || []).push({});
+    } catch {
+      /* AdSense may throw if the script is blocked */
+    }
   });
 }
 

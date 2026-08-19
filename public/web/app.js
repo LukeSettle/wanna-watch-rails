@@ -772,7 +772,7 @@ async function undoLastSwipe() {
 // ---------- rendering ----------
 
 function screenName() {
-  if (state.view === "login" || state.view === "reset") return state.view;
+  if (state.view === "login" || state.view === "reset" || state.view === "shop") return state.view;
   if (!state.user?.username) return "name";
   if (!state.game) return state.view;
   if (isFirstMatch()) return state.game.finished_at ? "matchFound" : "match";

@@ -702,6 +702,7 @@ function recordSwipe(movie, liked, { deferFinish } = {}) {
 
   state.lastSwipe = { movie, liked, key };
   updateUndoButton();
+  maybeShowSwipeAdBreak();
 
   if (isContinuous()) {
     reportSwipe(movie, liked);
@@ -1022,7 +1023,7 @@ function renderHomeScreen() {
 
       <button class="btn btn-primary btn-big" id="quick-play">▶ Quick play</button>
       <button class="btn btn-ghost" id="create-game">Custom game (optional filters)</button>
-      <button class="btn btn-secondary" id="open-shop">Extras &amp; supporter</button>
+      ${isPlus() ? "" : `<button class="btn btn-secondary" id="open-shop">WannaWatch+</button>`}
 
       ${adSlotHtml("home")}
 
@@ -1405,11 +1406,76 @@ async function renderCreateScreen() {
     <button type="button" class="chip ${index === 0 ? "selected" : ""}" ${extra(item)}>${esc(item.label)}</button>
   `).join("");
 
+  const fineTuneFields = `
+          <div class="form-card fine-tune-body">
+            <div class="field-block">
+              <label>Genres</label>
+              <div class="chips" id="genre-chips"><span class="muted">Loading genres…</span></div>
+            </div>
+
+            <div class="field-block">
+              <label>When was it made?</label>
+              <p class="hint">Pick one or combine eras (e.g. New + Classics).</p>
+              <div class="chips" id="era-chips">
+                ${eraPresets.map((item, index) => `
+                  <button type="button" class="chip ${index === 0 ? "selected" : ""}" data-from="${item.from}" data-to="${item.to}" data-any="${item.any ? "1" : "0"}">${esc(item.label)}</button>
+                `).join("")}
+              </div>
+            </div>
+
+            <div class="field-block">
+              <label>How good does it need to be?</label>
+              <div class="chips single" id="rating-chips">
+                ${presetChips(ratingPresets, (item) => `data-min="${item.min}"`)}
+              </div>
+            </div>
+
+            <div class="field-block" id="runtime-block">
+              <label>How long is movie night?</label>
+              <div class="chips single" id="runtime-chips">
+                ${presetChips(runtimePresets, (item) => `data-min="${item.min}" data-max="${item.max}"`)}
+              </div>
+            </div>
+
+            <div class="field-block">
+              <label>Language</label>
+              <div class="chips" id="language-chips">
+                ${languagePresets.map((item) => `<button type="button" class="chip" data-value="${item.value}">${esc(item.label)}</button>`).join("")}
+              </div>
+            </div>
+
+            <div class="field-block">
+              <label>Extras</label>
+              <div class="chips" id="extra-chips">
+                <button type="button" class="chip" id="favor-popular-chip">Favor popular</button>
+                <button type="button" class="chip" id="include-kids-chip">Include children's</button>
+              </div>
+            </div>
+          </div>`;
+
+  const fineTuneSection = isPlus()
+    ? `<details class="card fine-tune">
+          <summary>Fine-tune <span class="muted">(optional)</span></summary>
+          ${fineTuneFields}
+        </details>`
+    : `<section class="card fine-tune fine-tune-locked">
+          <div class="fine-tune-lock">
+            <div>
+              <strong>Fine-tune</strong>
+              <p class="muted">Genres, eras, runtime, and language — WannaWatch+.</p>
+            </div>
+            <button type="button" class="btn btn-secondary btn-small" id="unlock-fine-tune">Get WannaWatch+</button>
+          </div>
+          <div hidden>${fineTuneFields}</div>
+        </section>`;
+
   app.innerHTML = `
     ${topBarHtml("")}
     <div class="screen create-screen">
       <h1 class="headline-sm">Custom game</h1>
-      <p class="muted create-lede">Pick a mode and vibe — fine-tune only if you want.</p>
+      <p class="muted create-lede">${isPlus()
+        ? "Pick a mode and vibe — Fine-tune below if you want."
+        : "Pick a mode and vibe. WannaWatch+ unlocks Fine-tune."}</p>
       <form id="create-form">
         <section class="card form-card">
           <label>Game mode</label>
@@ -1455,54 +1521,7 @@ async function renderCreateScreen() {
           </div>
         </section>
 
-        <details class="card fine-tune">
-          <summary>Fine-tune <span class="muted">(optional)</span></summary>
-          <div class="form-card fine-tune-body">
-            <div class="field-block">
-              <label>Genres</label>
-              <div class="chips" id="genre-chips"><span class="muted">Loading genres…</span></div>
-            </div>
-
-            <div class="field-block">
-              <label>When was it made?</label>
-              <p class="hint">Pick one or combine eras (e.g. New + Classics).</p>
-              <div class="chips" id="era-chips">
-                ${eraPresets.map((item, index) => `
-                  <button type="button" class="chip ${index === 0 ? "selected" : ""}" data-from="${item.from}" data-to="${item.to}" data-any="${item.any ? "1" : "0"}">${esc(item.label)}</button>
-                `).join("")}
-              </div>
-            </div>
-
-            <div class="field-block">
-              <label>How good does it need to be?</label>
-              <div class="chips single" id="rating-chips">
-                ${presetChips(ratingPresets, (item) => `data-min="${item.min}"`)}
-              </div>
-            </div>
-
-            <div class="field-block" id="runtime-block">
-              <label>How long is movie night?</label>
-              <div class="chips single" id="runtime-chips">
-                ${presetChips(runtimePresets, (item) => `data-min="${item.min}" data-max="${item.max}"`)}
-              </div>
-            </div>
-
-            <div class="field-block">
-              <label>Language</label>
-              <div class="chips" id="language-chips">
-                ${languagePresets.map((item) => `<button type="button" class="chip" data-value="${item.value}">${esc(item.label)}</button>`).join("")}
-              </div>
-            </div>
-
-            <div class="field-block">
-              <label>Extras</label>
-              <div class="chips" id="extra-chips">
-                <button type="button" class="chip" id="favor-popular-chip">Favor popular</button>
-                <button type="button" class="chip" id="include-kids-chip">Include children's</button>
-              </div>
-            </div>
-          </div>
-        </details>
+        ${fineTuneSection}
 
         <div class="button-row sticky-actions">
           <button type="button" class="btn btn-ghost" id="cancel-create">Back</button>
@@ -1512,6 +1531,11 @@ async function renderCreateScreen() {
     </div>`;
 
   bindBrandHome();
+
+  document.getElementById("unlock-fine-tune")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    openPlusShop();
+  });
 
   document.querySelectorAll(".mode-option").forEach((option) => {
     option.addEventListener("click", () => {
@@ -2894,25 +2918,40 @@ function buildLibraryFromGames(games) {
 
     if (players.length < 2) return;
     matchedIdsFor(game).forEach((key) => {
-      const entry = matches.get(key) || { with: new Set(), count: 0 };
+      const entry = matches.get(key) || { with: new Set(), count: 0, lastAt: 0 };
       entry.count += 1;
+      entry.lastAt = Math.max(entry.lastAt, finishedAt);
       others.forEach((p) => entry.with.add(p.user?.username || "Friend"));
       matches.set(key, entry);
     });
   });
 
-  const sortMyLikes = [...myLikes.entries()].sort((a, b) => {
-    if (b[1].with.size !== a[1].with.size) return b[1].with.size - a[1].with.size;
-    if (b[1].count !== a[1].count) return b[1].count - a[1].count;
-    return b[1].lastAt - a[1].lastAt;
-  });
-
-  const sortMatches = [...matches.entries()].sort((a, b) => {
-    if (b[1].count !== a[1].count) return b[1].count - a[1].count;
-    return b[1].with.size - a[1].with.size;
-  });
+  const byRecent = (a, b) => (b[1].lastAt || 0) - (a[1].lastAt || 0);
+  const sortMyLikes = [...myLikes.entries()].sort(byRecent);
+  const sortMatches = [...matches.entries()].sort(byRecent);
 
   return { myLikes: sortMyLikes, matches: sortMatches };
+}
+
+function capLibraryEntries(entries) {
+  if (isPlus() || !entries?.length) return { visible: entries || [], total: entries?.length || 0, capped: false };
+  const total = entries.length;
+  const limit = LIBRARY_FREE_LIMIT;
+  return {
+    visible: entries.slice(0, limit),
+    total,
+    capped: total > limit,
+  };
+}
+
+function plusHistoryNudgeHtml(total, noun) {
+  return `<p class="muted plus-nudge">Showing your last ${LIBRARY_FREE_LIMIT} of ${total} ${noun}. <button type="button" class="link inline-link" data-open-plus>WannaWatch+ ($2.99/mo) unlocks the rest.</button></p>`;
+}
+
+function bindPlusNudge(root) {
+  root.querySelectorAll("[data-open-plus]").forEach((btn) => {
+    btn.addEventListener("click", openPlusShop);
+  });
 }
 
 async function renderHistoryScreen() {
@@ -2920,7 +2959,9 @@ async function renderHistoryScreen() {
     ${topBarHtml("")}
     <div class="screen library-screen">
       <h1 class="headline-sm">Your movies</h1>
-      <p class="muted">Likes and matches across every night — pick tonight’s film, or narrow a list with a friend.</p>
+      <p class="muted">${isPlus()
+        ? "Likes and matches across every night — pick tonight’s film, or narrow a list with a friend."
+        : `Free keeps your last ${LIBRARY_FREE_LIMIT} likes and matches. WannaWatch+ ($2.99/mo) unlocks the full history.`}</p>
       ${accountNudgeHtml("history")}
       <div id="settled-banner"></div>
       <div class="tab-row library-tabs">
@@ -3009,17 +3050,24 @@ async function renderLibraryMatches(container, matchEntries) {
     return;
   }
 
+  const { visible, total, capped } = capLibraryEntries(matchEntries);
+
   container.innerHTML = `
     <div class="library-toolbar">
-      <p class="muted">${matchEntries.length} title${matchEntries.length === 1 ? "" : "s"} you matched on</p>
-      ${matchEntries.length > 1
+      <p class="muted">${capped
+        ? `${visible.length} of ${total} titles you matched on`
+        : `${total} title${total === 1 ? "" : "s"} you matched on`}</p>
+      ${visible.length > 1
         ? `<button type="button" class="btn btn-secondary btn-small" id="settle-random">Pick one for us</button>`
         : ""}
     </div>
+    ${capped ? plusHistoryNudgeHtml(total, "matches") : ""}
     <div id="library-grid" class="results-grid"><p class="muted">Loading…</p></div>`;
 
+  bindPlusNudge(container);
+
   document.getElementById("settle-random")?.addEventListener("click", async () => {
-    const [key, meta] = matchEntries[Math.floor(Math.random() * Math.min(matchEntries.length, 30))];
+    const [key, meta] = visible[Math.floor(Math.random() * visible.length)];
     const { id, mediaType } = parseMediaKey(key);
     const movie = await fetchMovieSummary(id, mediaType);
     settleOnTitle(key, movie, [...(meta.with || [])].join(", "));
@@ -3027,7 +3075,7 @@ async function renderLibraryMatches(container, matchEntries) {
 
   await fillLibraryGrid(
     document.getElementById("library-grid"),
-    matchEntries.slice(0, 40).map(([key, meta]) => ({
+    visible.map(([key, meta]) => ({
       key,
       subtitle: `Matched with ${[...meta.with].join(", ") || "friends"}`,
       withNames: [...meta.with].join(", "),
@@ -3042,18 +3090,24 @@ async function renderLibraryLikes(container, likeEntries) {
     return;
   }
 
+  const { visible, total, capped } = capLibraryEntries(likeEntries);
+
   container.innerHTML = `
     <div class="library-toolbar">
-      <p class="muted">${likeEntries.length} title${likeEntries.length === 1 ? "" : "s"} you’ve liked</p>
-      ${likeEntries.length > 1
+      <p class="muted">${capped
+        ? `${visible.length} of ${total} titles you’ve liked`
+        : `${total} title${total === 1 ? "" : "s"} you’ve liked`}</p>
+      ${visible.length > 1
         ? `<button type="button" class="btn btn-secondary btn-small" id="settle-random-likes">Settle on one</button>`
         : ""}
     </div>
+    ${capped ? plusHistoryNudgeHtml(total, "likes") : ""}
     <div id="library-grid" class="results-grid"><p class="muted">Loading…</p></div>`;
 
+  bindPlusNudge(container);
+
   document.getElementById("settle-random-likes")?.addEventListener("click", async () => {
-    const pooled = likeEntries.slice(0, 30);
-    const [key, meta] = pooled[Math.floor(Math.random() * pooled.length)];
+    const [key, meta] = visible[Math.floor(Math.random() * visible.length)];
     const { id, mediaType } = parseMediaKey(key);
     const movie = await fetchMovieSummary(id, mediaType);
     settleOnTitle(key, movie, [...(meta.with || [])].join(", "));
@@ -3061,7 +3115,7 @@ async function renderLibraryLikes(container, likeEntries) {
 
   await fillLibraryGrid(
     document.getElementById("library-grid"),
-    likeEntries.slice(0, 40).map(([key, meta]) => ({
+    visible.map(([key, meta]) => ({
       key,
       subtitle: meta.with.size
         ? `Also liked with ${[...meta.with].join(", ")}`

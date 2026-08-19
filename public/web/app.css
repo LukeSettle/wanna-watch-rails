@@ -320,6 +320,21 @@ select option { color: var(--ink); }
 
 .fine-tune[open] summary { margin-bottom: 14px; }
 
+.fine-tune-locked {
+  padding: 14px 16px;
+}
+
+.fine-tune-lock {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.fine-tune-lock p { margin: 4px 0 0; }
+
+.plus-nudge { margin-top: 8px; }
+
 .endless-tag {
   background: rgba(62, 198, 255, 0.16);
   color: var(--accent-2);
@@ -1373,7 +1388,64 @@ button.game-row {
 
 .shop-actions { margin-top: 10px; }
 
+.shop-perks {
+  margin: 10px 0 0;
+  padding-left: 1.1em;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
 .shop-status, .shop-legal { font-size: 0.85rem; }
+
+.swipe-ad-overlay {
+  z-index: 90;
+  align-items: center;
+}
+
+.swipe-ad-sheet {
+  text-align: center;
+  gap: 10px;
+}
+
+.swipe-ad-kicker {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #888;
+}
+
+.swipe-ad-sheet h2 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.swipe-ad-unit {
+  min-height: 120px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #f3f3f5;
+}
+
+.swipe-ad-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 120px;
+  padding: 16px;
+  color: #555;
+  font-size: 0.95rem;
+}
+
+.swipe-ad-actions {
+  flex-direction: column;
+  gap: 8px;
+}
+
+.swipe-ad-actions .btn {
+  width: 100%;
+}
 
 .owned-pill {
   display: inline-block;

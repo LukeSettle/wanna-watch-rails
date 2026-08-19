@@ -7,12 +7,12 @@ class ShopController < ApiController
     render json: {
       products: ShopCatalog.all.as_json,
       stripe_configured: ShopCatalog.stripe_configured?,
-      demo_unlock_allowed: ShopCatalog.demo_unlock_allowed?,
       copy: {
-        headline: "Extras for movie lovers",
-        subhead: "Playing with friends stays free forever. These are optional add-ons that support indie movie night software — and make movie nerds a little happier.",
-        legal: "Purchases are optional. Core matching never requires payment. Supporter is a one-time purchase. Tips unlock nothing — they're just popcorn."
+        headline: "WannaWatch+",
+        subhead: "$2.99/month: no ads, Fine-tune on custom games, and your full likes & matches history.",
+        legal: "Subscriptions are optional. Core matching never requires payment. Cancel anytime from Manage subscription."
       },
+      swipe_ad_interval: ShopCatalog.swipe_ad_interval,
       entitlements: current_shop_user&.shop_json
     }
   end
@@ -39,6 +39,14 @@ class ShopController < ApiController
     end
 
     base = request.base_url
+    if user.subscription_active?
+      portal = StripeCheckout.create_portal_session!(
+        user: user,
+        return_url: "#{base}/?shop=portal"
+      )
+      return render json: { portal_url: portal.url, already_subscribed: true }
+    end
+
     session = StripeCheckout.create_session!(
       user: user,
       product: product,
@@ -48,6 +56,27 @@ class ShopController < ApiController
 
     render json: { checkout_url: session.url, session_id: session.id }
   rescue Stripe::StripeError => e
+    render json: { error: e.message }, status: :unprocessable_entity
+  end
+
+  def portal
+    user = resolve_user!
+    return unless user
+
+    unless user.can_manage_subscription?
+      return render json: { error: "No subscription to manage." }, status: :unprocessable_entity
+    end
+
+    unless ShopCatalog.stripe_configured?
+      return render json: { error: "Payments aren't configured yet." }, status: :service_unavailable
+    end
+
+    portal = StripeCheckout.create_portal_session!(
+      user: user,
+      return_url: "#{request.base_url}/?shop=portal"
+    )
+    render json: { portal_url: portal.url }
+  rescue Stripe::StripeError, ArgumentError => e
     render json: { error: e.message }, status: :unprocessable_entity
   end
 
@@ -69,6 +98,7 @@ class ShopController < ApiController
             stripe_session_id: session.id,
             stripe_payment_intent: session.payment_intent
           )
+          apply_session_subscription!(user, session)
         end
       end
     end
@@ -76,21 +106,6 @@ class ShopController < ApiController
     render json: user_shop_payload(user.reload)
   rescue Stripe::StripeError => e
     render json: { error: e.message }, status: :unprocessable_entity
-  end
-
-  def demo_unlock
-    unless ShopCatalog.demo_unlock_allowed?
-      return render json: { error: "Demo unlock is disabled." }, status: :forbidden
-    end
-
-    user = resolve_user!
-    return unless user
-
-    product = ShopCatalog.find(params[:product_id])
-    return render json: { error: "Unknown product." }, status: :not_found unless product
-
-    user.grant_product!(product, stripe_session_id: "demo_#{product.id}_#{user.id}")
-    render json: user_shop_payload(user.reload)
   end
 
   def entitlements
@@ -101,6 +116,14 @@ class ShopController < ApiController
   end
 
   private
+
+  def apply_session_subscription!(user, session)
+    subscription = session.subscription
+    return if subscription.blank?
+
+    subscription = StripeCheckout.retrieve_subscription(subscription) if subscription.is_a?(String)
+    StripeBilling.apply_subscription!(user, subscription)
+  end
 
   def current_shop_user
     user_id = cookies.signed[SESSION_COOKIE]

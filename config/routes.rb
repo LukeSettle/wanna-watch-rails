@@ -40,8 +40,8 @@ Rails.application.routes.draw do
   get 'shop/catalog', to: 'shop#catalog'
   get 'shop/entitlements', to: 'shop#entitlements'
   post 'shop/checkout', to: 'shop#checkout'
+  post 'shop/portal', to: 'shop#portal'
   post 'shop/confirm', to: 'shop#confirm'
-  post 'shop/demo_unlock', to: 'shop#demo_unlock'
   post 'stripe/webhook', to: 'stripe_webhooks#create'
 
   get 'home', to: 'application#home'

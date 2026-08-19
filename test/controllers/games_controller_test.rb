@@ -80,4 +80,40 @@ class GamesControllerTest < ActionDispatch::IntegrationTest
     assert_includes player.liked_movie_ids, "movie:550"
     assert_includes player.liked_movie_ids, "tv:550"
   end
+
+  test "upsert strips fine-tune language for free users" do
+    query = { params: { "with_genres" => "35", "with_original_language" => "ja" } }.to_json
+
+    post games_upsert_url, params: {
+      game: {
+        entry_code: "FREE01",
+        query: query,
+        user_id: @owner.id,
+        mode: "first_match"
+      }
+    }, as: :json
+
+    assert_response :success
+    parsed = JSON.parse(Game.find_by!(entry_code: "FREE01").query)
+    assert_equal "35", parsed.dig("params", "with_genres")
+    assert_nil parsed.dig("params", "with_original_language")
+  end
+
+  test "upsert keeps fine-tune language for plus users" do
+    @owner.apply_entitlements!(%w[plus ad_free])
+    query = { params: { "with_genres" => "35", "with_original_language" => "ja" } }.to_json
+
+    post games_upsert_url, params: {
+      game: {
+        entry_code: "PLUS01",
+        query: query,
+        user_id: @owner.id,
+        mode: "first_match"
+      }
+    }, as: :json
+
+    assert_response :success
+    parsed = JSON.parse(Game.find_by!(entry_code: "PLUS01").query)
+    assert_equal "ja", parsed.dig("params", "with_original_language")
+  end
 end

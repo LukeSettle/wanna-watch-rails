@@ -288,7 +288,11 @@ class GamesController < ApiController
 
   def update_game_and_user(game, user)
     ActiveRecord::Base.transaction do
-      game.assign_attributes(game_params)
+      attrs = game_params.to_h
+      if attrs["query"].present? && !user.has_entitlement?("plus")
+        attrs["query"] = FreeTier.sanitize_game_query(attrs["query"])
+      end
+      game.assign_attributes(attrs)
 
       game.save!
       if params[:providers]

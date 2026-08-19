@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v stripe >/dev/null 2>&1; then
+  echo "Stripe CLI is not installed. Run: npm i -g @stripe/cli"
+  exit 1
+fi
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
+
+if [[ -z "${STRIPE_SECRET_KEY:-}" ]]; then
+  echo "STRIPE_SECRET_KEY is missing. Add your sk_test_ / rk_test_ key to .env"
+  exit 1
+fi
+
+echo "Forwarding Stripe webhooks to http://localhost:3000/stripe/webhook"
+echo "If the signing secret printed below differs from .env, update STRIPE_WEBHOOK_SECRET and restart Rails."
+exec stripe listen \
+  --api-key "$STRIPE_SECRET_KEY" \
+  --forward-to localhost:3000/stripe/webhook \
+  --events checkout.session.completed,customer.subscription.updated,customer.subscription.deleted

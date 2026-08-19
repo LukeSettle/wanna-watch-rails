@@ -1,14 +1,29 @@
-// Shop / Extras + light ad slots. Loaded after api.js; used by app.js.
+// Shop / WannaWatch+ + light ad slots. Loaded after api.js; used by app.js.
 
 function isAdFree() {
-  return !!(state.user?.ad_free || state.user?.entitlements?.ad_free || state.user?.supporter);
+  return !!(state.user?.ad_free || state.user?.entitlements?.ad_free || state.user?.supporter || isPlus());
+}
+
+function isPlus() {
+  const status = state.user?.subscription_status;
+  if (["active", "trialing", "past_due"].includes(status)) return true;
+  return !!(state.user?.plus || state.user?.entitlements?.plus);
 }
 
 function hasEntitlement(key) {
   if (key === "ad_free") return isAdFree();
+  if (key === "plus") return isPlus();
   const ents = state.user?.entitlements || {};
   return !!ents[key];
 }
+
+function openPlusShop() {
+  state.view = "shop";
+  lastRenderKey = null;
+  render();
+}
+
+const LIBRARY_FREE_LIMIT = 10;
 
 function flairBadgeHtml(user = state.user) {
   if (!user?.entitlements?.lobby_flair && !user?.entitlements?.supporter) return "";
@@ -30,6 +45,11 @@ function adsenseClient() {
 function adsenseSlot(placement) {
   const slots = window.WW_ADS?.slots || {};
   return slots[placement] || "";
+}
+
+function swipeAdInterval() {
+  const n = Number(window.WW_ADS?.swipeInterval);
+  return Number.isFinite(n) && n > 0 ? n : 40;
 }
 
 function adSlotHtml(placement = "home") {
@@ -134,8 +154,65 @@ function deepDiveExtrasHtml(movie) {
               <span class="muted">${esc(person.character || "")}</span>
             </div>`).join("")}
         </div>` : ""}
-      <p class="hint">Movie-lover extras from TMDB — part of Deep Dive Cards.</p>
     </div>`;
+}
+
+// ---------- swipe ad breaks ----------
+
+function swipeAdCountKey() {
+  return storageKey(`swipe_ad_count_${state.user?.id || state.deviceId || "guest"}`);
+}
+
+function nextSwipeAdCount() {
+  const n = Number(loadJSON(swipeAdCountKey(), 0)) + 1;
+  saveJSON(swipeAdCountKey(), n);
+  return n;
+}
+
+function maybeShowSwipeAdBreak() {
+  if (isAdFree()) return;
+  if (document.getElementById("swipe-ad-break")) return;
+
+  const interval = swipeAdInterval();
+  const count = nextSwipeAdCount();
+  if (count % interval !== 0) return;
+
+  showSwipeAdBreak();
+}
+
+function showSwipeAdBreak() {
+  const existing = document.getElementById("swipe-ad-break");
+  if (existing) existing.remove();
+
+  const overlay = document.createElement("div");
+  overlay.id = "swipe-ad-break";
+  overlay.className = "modal-overlay swipe-ad-overlay";
+  overlay.innerHTML = `
+    <div class="modal-sheet swipe-ad-sheet" role="dialog" aria-labelledby="swipe-ad-title">
+      <p class="swipe-ad-kicker">Quick break</p>
+      <h2 id="swipe-ad-title">Sponsored pause</h2>
+      <p class="muted">Ads keep WannaWatch free. WannaWatch+ removes them, unlocks Fine-tune, and keeps your full history.</p>
+      <div class="swipe-ad-unit">
+        ${adSlotHtml("swipe") || `
+          <div class="swipe-ad-fallback">
+            <p>Thanks for swiping — a short pause helps keep the lights on.</p>
+          </div>`}
+      </div>
+      <div class="button-row swipe-ad-actions">
+        <button type="button" class="btn btn-primary" id="swipe-ad-continue">Keep swiping</button>
+        <button type="button" class="btn btn-secondary" id="swipe-ad-remove">Get WannaWatch+</button>
+      </div>
+    </div>`;
+
+  document.body.appendChild(overlay);
+  bindAdSlots(overlay);
+
+  const close = () => overlay.remove();
+  document.getElementById("swipe-ad-continue").addEventListener("click", close);
+  document.getElementById("swipe-ad-remove").addEventListener("click", () => {
+    close();
+    openPlusShop();
+  });
 }
 
 async function handleShopReturn() {
@@ -144,6 +221,11 @@ async function handleShopReturn() {
   if (!shop) return false;
 
   history.replaceState({}, "", "/");
+  if (shop === "portal") {
+    state.view = "shop";
+    return true;
+  }
+
   if (shop === "cancel") {
     toast("Checkout canceled — no charge.");
     state.view = "shop";
@@ -156,9 +238,9 @@ async function handleShopReturn() {
       if (sessionId && state.user) {
         adoptUser(await backend.confirmShopPurchase(sessionId, state.user.id));
       }
-      toast("You're the best — thank you! Extras unlocked.");
+      toast("WannaWatch+ is on — thank you!");
     } catch {
-      toast("Payment received — refreshing your extras…");
+      toast("Payment received — refreshing…");
       try {
         if (state.user?.email) adoptUser(await backend.me());
         else if (state.user) adoptUser(await backend.shopEntitlements(state.user.id));
@@ -171,8 +253,8 @@ async function handleShopReturn() {
 }
 
 function ownedLabel(product) {
+  if (isPlus()) return `<span class="owned-pill">Subscribed</span>`;
   const keys = product.entitlement_keys || [];
-  if (product.kind === "tip") return "";
   if (keys.some((k) => hasEntitlement(k))) return `<span class="owned-pill">Owned</span>`;
   return "";
 }
@@ -182,12 +264,11 @@ function renderShopScreen() {
     ${topBarHtml(`<button class="link" id="shop-back">Back</button>`)}
     <div class="screen shop-screen">
       <div class="hero">
-        <h1 class="headline-sm">Extras</h1>
-        <p class="muted">You're supporting indie movie night software. Core play with friends stays free forever — these are feel-good add-ons.</p>
+        <h1 class="headline-sm">WannaWatch+</h1>
+        <p class="muted">$2.99/month. No ads, Fine-tune on custom games, and your full likes &amp; matches history while you're subscribed. Cancel anytime.</p>
       </div>
-      <div id="shop-status" class="shop-status muted">Loading catalog…</div>
+      <div id="shop-status" class="shop-status muted">Loading…</div>
       <div id="shop-products" class="shop-products"></div>
-      <section class="card shop-vault-card" id="shop-vault" hidden></section>
       <p class="muted shop-legal" id="shop-legal"></p>
     </div>`;
 
@@ -211,12 +292,17 @@ async function loadShopCatalog() {
     if (data.entitlements && state.user) {
       state.user = { ...state.user, ...data.entitlements };
     }
+    if (data.swipe_ad_interval) {
+      window.WW_ADS = window.WW_ADS || {};
+      window.WW_ADS.swipeInterval = data.swipe_ad_interval;
+    }
 
     const stripeOk = data.stripe_configured;
-    const demoOk = data.demo_unlock_allowed;
-    status.innerHTML = stripeOk
-      ? `Secure checkout via Stripe. ${isAdFree() ? "You're ad-free — thank you!" : "Small banners help keep the free tier going."}`
-      : `Payments aren't live on this server yet.${demoOk ? " Dev demo unlock is available below." : " Browse the catalog — coming soon."}`;
+    status.innerHTML = isPlus()
+      ? "You're on WannaWatch+ — thank you for supporting the app."
+      : stripeOk
+        ? "Secure checkout via Stripe. $2.99/month, cancel anytime."
+        : "Payments aren't live on this server yet.";
 
     if (legal) legal.textContent = data.copy?.legal || "";
 
@@ -230,41 +316,43 @@ async function loadShopCatalog() {
           <div class="shop-price">${esc(product.price_label)}</div>
         </div>
         <p class="muted">${esc(product.description)}</p>
+        <ul class="shop-perks">
+          <li>No ad breaks or banners</li>
+          <li>Fine-tune custom games (genres, eras, runtime, language)</li>
+          <li>Full likes &amp; matches history — not just the last ${LIBRARY_FREE_LIMIT}</li>
+        </ul>
         <div class="shop-actions">
-          ${checkoutButtonHtml(product, stripeOk, demoOk)}
+          ${checkoutButtonHtml(product, stripeOk)}
         </div>
       </article>`).join("");
 
     list.querySelectorAll("[data-buy]").forEach((btn) => {
       btn.addEventListener("click", () => startCheckout(btn.dataset.buy, btn));
     });
-    list.querySelectorAll("[data-demo]").forEach((btn) => {
-      btn.addEventListener("click", () => demoUnlock(btn.dataset.demo, btn));
+    list.querySelectorAll("[data-portal]").forEach((btn) => {
+      btn.addEventListener("click", () => startPortal(btn));
     });
-
-    renderShopVault();
   } catch {
     status.textContent = "Couldn't load the shop. Try again in a moment.";
   }
 }
 
-function checkoutButtonHtml(product, stripeOk, demoOk) {
-  const owned = (product.entitlement_keys || []).some((k) => hasEntitlement(k));
-  if (owned && product.kind !== "tip") {
-    return `<button type="button" class="btn btn-ghost" disabled>Already yours</button>`;
+function checkoutButtonHtml(product, stripeOk) {
+  if (isPlus()) {
+    if (state.user?.can_manage_subscription && stripeOk) {
+      return `<button type="button" class="btn btn-secondary" data-portal>Manage subscription</button>`;
+    }
+    return `<button type="button" class="btn btn-ghost" disabled>Subscribed</button>`;
   }
   if (stripeOk) {
-    return `<button type="button" class="btn btn-primary" data-buy="${esc(product.id)}">Get it</button>`;
-  }
-  if (demoOk) {
-    return `<button type="button" class="btn btn-secondary" data-demo="${esc(product.id)}">Demo unlock</button>`;
+    return `<button type="button" class="btn btn-primary" data-buy="${esc(product.id)}">Subscribe — ${esc(product.price_label)}</button>`;
   }
   return `<button type="button" class="btn btn-ghost" disabled>Coming soon</button>`;
 }
 
 async function startCheckout(productId, button) {
   if (!state.user) {
-    toast("Pick a name first, then come back to Extras.");
+    toast("Pick a name first, then come back for WannaWatch+.");
     return;
   }
   if (!state.user.email) {
@@ -278,8 +366,8 @@ async function startCheckout(productId, button) {
   button.disabled = true;
   try {
     const result = await backend.createShopCheckout(productId, state.user.id);
-    if (result.checkout_url) {
-      location.href = result.checkout_url;
+    if (result.checkout_url || result.portal_url) {
+      location.href = result.checkout_url || result.portal_url;
       return;
     }
     toast(result.error || "Could not start checkout.");
@@ -297,46 +385,19 @@ async function startCheckout(productId, button) {
   }
 }
 
-async function demoUnlock(productId, button) {
+async function startPortal(button) {
   if (!state.user) return;
   button.disabled = true;
   try {
-    adoptUser(await backend.demoShopUnlock(productId, state.user.id));
-    toast("Demo unlock applied — enjoy!");
-    lastRenderKey = null;
-    render();
+    const result = await backend.createShopPortal(state.user.id);
+    if (result.portal_url) {
+      location.href = result.portal_url;
+      return;
+    }
+    toast(result.error || "Couldn't open subscription settings.");
   } catch (error) {
-    toast(error.serverMessage || "Demo unlock failed.");
+    toast(error.serverMessage || "Couldn't open subscription settings.");
+  } finally {
     button.disabled = false;
   }
-}
-
-function renderShopVault() {
-  const el = document.getElementById("shop-vault");
-  if (!el) return;
-  if (!hasEntitlement("match_vault")) {
-    el.hidden = true;
-    return;
-  }
-
-  const items = loadVault();
-  el.hidden = false;
-  el.innerHTML = `
-    <h2>Match Vault</h2>
-    <p class="muted">${items.length ? `${items.length} saved match${items.length === 1 ? "" : "es"}.` : "Matches you save from results will land here."}</p>
-    <div class="vault-list">
-      ${items.slice(0, 12).map((m) => `
-        <div class="vault-row">
-          <strong>${esc(m.title || "Untitled")}</strong>
-          <span class="muted">${m.release_date ? esc(String(m.release_date).slice(0, 4)) : ""}</span>
-        </div>`).join("") || ""}
-    </div>
-    <div class="button-row">
-      <button type="button" class="btn btn-secondary" id="export-vault" ${items.length ? "" : "disabled"}>Export JSON</button>
-    </div>`;
-
-  document.getElementById("export-vault")?.addEventListener("click", () => {
-    exportVault();
-    toast("Vault exported.");
-  });
 }

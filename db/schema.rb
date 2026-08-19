@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_08_15_200000) do
+ActiveRecord::Schema[7.1].define(version: 2026_08_17_010000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "plpgsql"
 
@@ -87,9 +87,12 @@ ActiveRecord::Schema[7.1].define(version: 2026_08_15_200000) do
     t.string "stripe_customer_id"
     t.boolean "ad_free", default: false, null: false
     t.jsonb "entitlements", default: {}, null: false
+    t.string "stripe_subscription_id"
+    t.string "subscription_status"
     t.index ["email"], name: "index_users_on_email", unique: true, where: "(email IS NOT NULL)"
     t.index ["phone"], name: "index_users_on_phone", unique: true, where: "(phone IS NOT NULL)"
     t.index ["stripe_customer_id"], name: "index_users_on_stripe_customer_id", unique: true, where: "(stripe_customer_id IS NOT NULL)"
+    t.index ["stripe_subscription_id"], name: "index_users_on_stripe_subscription_id", unique: true, where: "(stripe_subscription_id IS NOT NULL)"
   end
 
   add_foreign_key "game_invites", "games"

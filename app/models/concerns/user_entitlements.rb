@@ -2,15 +2,33 @@ module UserEntitlements
   extend ActiveSupport::Concern
 
   FLAIR_STYLES = %w[popcorn film star].freeze
+  PLUS_SUB_STATUSES = %w[active trialing past_due].freeze
 
   def entitlements_hash
     (entitlements || {}).stringify_keys
   end
 
   def has_entitlement?(key)
-    return true if key.to_s == "ad_free" && ad_free?
+    return true if key.to_s == "ad_free" && (ad_free? || plus?)
+    return true if key.to_s == "plus" && plus?
 
     ActiveModel::Type::Boolean.new.cast(entitlements_hash[key.to_s])
+  end
+
+  def plus?
+    status = subscription_status.to_s
+    return true if PLUS_SUB_STATUSES.include?(status)
+    return false if stripe_subscription_id.present? && status.present?
+
+    ActiveModel::Type::Boolean.new.cast(entitlements_hash["plus"])
+  end
+
+  def subscription_active?
+    PLUS_SUB_STATUSES.include?(subscription_status.to_s)
+  end
+
+  def can_manage_subscription?
+    stripe_customer_id.present? && stripe_subscription_id.present?
   end
 
   def grant_product!(product, stripe_session_id: nil, stripe_payment_intent: nil)
@@ -53,6 +71,10 @@ module UserEntitlements
       when "ad_free"
         attrs[:ad_free] = true
         merged["ad_free"] = true
+      when "plus"
+        attrs[:ad_free] = true
+        merged["plus"] = true
+        merged["ad_free"] = true
       when "supporter"
         attrs[:ad_free] = true
         merged["supporter"] = true
@@ -76,7 +98,10 @@ module UserEntitlements
 
   def shop_json
     {
-      "ad_free" => ad_free?,
+      "ad_free" => ad_free? || plus?,
+      "plus" => plus?,
+      "subscription_status" => subscription_status,
+      "can_manage_subscription" => can_manage_subscription?,
       "entitlements" => entitlements_hash,
       "supporter" => has_entitlement?("supporter"),
       "flair_style" => entitlements_hash["flair_style"]

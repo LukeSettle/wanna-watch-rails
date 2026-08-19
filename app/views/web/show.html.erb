@@ -25,8 +25,10 @@
       // Optional: paste Display ad unit IDs from AdSense → Ads → By ad unit
       slots: {
         home: "<%= ENV.fetch('ADSENSE_SLOT_HOME', '') %>",
-        results: "<%= ENV.fetch('ADSENSE_SLOT_RESULTS', '') %>"
-      }
+        results: "<%= ENV.fetch('ADSENSE_SLOT_RESULTS', '') %>",
+        swipe: "<%= ENV.fetch('ADSENSE_SLOT_SWIPE', '') %>"
+      },
+      swipeInterval: <%= ShopCatalog.swipe_ad_interval %>
     };
   </script>
   <title>WannaWatch — Swipe movies with friends</title>
@@ -35,7 +37,7 @@
   <meta property="og:title" content="WannaWatch">
   <meta property="og:description" content="Swipe movies with friends and find one you all wanna watch.">
   <meta property="og:image" content="/logo.png">
-  <link rel="stylesheet" href="/web/app.css?v=17">
+  <link rel="stylesheet" href="/web/app.css?v=21">
 </head>
 <body>
   <div id="app">
@@ -73,9 +75,9 @@
     </main>
   </noscript>
 
-  <script src="/web/api.js?v=17"></script>
-  <script src="/web/cable.js?v=17"></script>
-  <script src="/web/shop.js?v=17"></script>
-  <script src="/web/app.js?v=17"></script>
+  <script src="/web/api.js?v=21"></script>
+  <script src="/web/cable.js?v=21"></script>
+  <script src="/web/shop.js?v=21"></script>
+  <script src="/web/app.js?v=21"></script>
 </body>
 </html>

@@ -1,5 +1,4 @@
 # frozen_string_literal: true
 
-if ENV["STRIPE_SECRET_KEY"].present?
-  Stripe.api_key = ENV["STRIPE_SECRET_KEY"]
-end
+# Stripe is configured per-request via Stripe::StripeClient in StripeCheckout.
+# Keys live in ENV["STRIPE_SECRET_KEY"] / ENV["STRIPE_WEBHOOK_SECRET"] — never in source.

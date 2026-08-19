@@ -33,6 +33,7 @@ gem "bootsnap", require: false
 group :development, :test do
   gem "pry"
   gem "debug", platforms: %i[ mri windows ]
+  gem "dotenv-rails"
 end
 
 group :development do

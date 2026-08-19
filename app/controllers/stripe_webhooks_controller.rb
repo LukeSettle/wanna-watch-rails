@@ -8,7 +8,7 @@ class StripeWebhooksController < ActionController::API
       event = Stripe::Webhook.construct_event(payload, signature, secret)
     else
       # Local/dev without webhook signing secret — parse JSON only when explicitly allowed.
-      return head :service_unavailable unless ShopCatalog.demo_unlock_allowed?
+      return head :service_unavailable unless Rails.env.development? || Rails.env.test?
 
       event = Stripe::Event.construct_from(JSON.parse(payload))
     end
@@ -25,6 +25,8 @@ class StripeWebhooksController < ActionController::API
     case event.type
     when "checkout.session.completed"
       fulfill_checkout(event.data.object)
+    when "customer.subscription.updated", "customer.subscription.deleted"
+      sync_subscription(event.data.object)
     end
   end
 
@@ -44,5 +46,16 @@ class StripeWebhooksController < ActionController::API
       stripe_session_id: session.id,
       stripe_payment_intent: session.payment_intent
     )
+
+    subscription = session.subscription
+    return if subscription.blank?
+
+    subscription = StripeCheckout.retrieve_subscription(subscription) if subscription.is_a?(String)
+    StripeBilling.apply_subscription!(user, subscription)
+  end
+
+  def sync_subscription(subscription)
+    user = StripeBilling.user_for_subscription(subscription)
+    StripeBilling.apply_subscription!(user, subscription) if user
   end
 end

@@ -1,46 +1,72 @@
 require "test_helper"
 
 class UserEntitlementsTest < ActiveSupport::TestCase
-  test "granting supporter sets ad_free and entitlements" do
+  test "granting WannaWatch+ sets plus and ad_free" do
     user = users(:one)
-    product = ShopCatalog.find("supporter")
+    product = ShopCatalog.find("wannawatch_plus")
 
-    purchase = user.grant_product!(product, stripe_session_id: "cs_test_supporter_1")
+    purchase = user.grant_product!(product, stripe_session_id: "cs_test_plus_1")
 
     assert purchase.persisted?
     assert user.reload.ad_free?
-    assert user.has_entitlement?("supporter")
-    assert_equal "supporter", purchase.product_id
+    assert user.plus?
+    assert user.has_entitlement?("plus")
+    assert user.has_entitlement?("ad_free")
+    assert_equal "wannawatch_plus", purchase.product_id
+  end
+
+  test "legacy remove_ads product id grants plus" do
+    user = users(:one)
+    product = ShopCatalog.find("remove_ads")
+
+    user.grant_product!(product, stripe_session_id: "cs_test_remove_ads_1")
+
+    assert user.reload.plus?
+    assert user.ad_free?
+    assert_equal "wannawatch_plus", user.purchases.last.product_id
   end
 
   test "webhook-style grant is idempotent on stripe session" do
     user = users(:one)
-    product = ShopCatalog.find("match_vault")
+    product = ShopCatalog.find("wannawatch_plus")
 
-    first = user.grant_product!(product, stripe_session_id: "cs_test_vault_1")
-    second = user.grant_product!(product, stripe_session_id: "cs_test_vault_1")
+    first = user.grant_product!(product, stripe_session_id: "cs_test_plus_1")
+    second = user.grant_product!(product, stripe_session_id: "cs_test_plus_1")
 
     assert_equal first.id, second.id
-    assert_equal 1, user.purchases.where(product_id: "match_vault").count
-    assert user.reload.has_entitlement?("match_vault")
+    assert_equal 1, user.purchases.where(product_id: "wannawatch_plus").count
+    assert user.reload.plus?
   end
 
-  test "tip increments counter without feature flag" do
-    user = users(:one)
-    product = ShopCatalog.find("tip_popcorn")
-
-    user.grant_product!(product, stripe_session_id: "cs_test_tip_1")
-    user.grant_product!(product, stripe_session_id: "cs_test_tip_2")
-
-    assert_equal 2, user.reload.entitlements_hash["tips"]
-    assert_not user.has_entitlement?("match_vault")
-  end
-
-  test "lobby flair picks a style" do
+  test "active stripe subscription grants plus" do
     user = users(:two)
-    user.grant_product!(ShopCatalog.find("lobby_flair"), stripe_session_id: "cs_test_flair_1")
+    StripeBilling.apply_subscription!(user, {
+      "id" => "sub_test_active",
+      "status" => "active",
+      "customer" => "cus_test_1"
+    })
 
-    assert user.reload.has_entitlement?("lobby_flair")
-    assert_includes UserEntitlements::FLAIR_STYLES, user.entitlements_hash["flair_style"]
+    assert user.reload.plus?
+    assert user.ad_free?
+    assert user.subscription_active?
+    assert_equal "sub_test_active", user.stripe_subscription_id
+  end
+
+  test "canceled stripe subscription revokes plus" do
+    user = users(:two)
+    StripeBilling.apply_subscription!(user, {
+      "id" => "sub_test_cancel",
+      "status" => "active",
+      "customer" => "cus_test_2"
+    })
+    StripeBilling.apply_subscription!(user, {
+      "id" => "sub_test_cancel",
+      "status" => "canceled",
+      "customer" => "cus_test_2"
+    })
+
+    assert_not user.reload.plus?
+    assert_not user.ad_free?
+    assert_equal "canceled", user.subscription_status
   end
 end

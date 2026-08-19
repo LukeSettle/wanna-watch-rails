@@ -182,10 +182,10 @@ const backend = {
       body: { session_id: sessionId, user_id: userId },
     });
   },
-  demoShopUnlock(productId, userId) {
-    return backendRequest("/shop/demo_unlock", {
+  createShopPortal(userId) {
+    return backendRequest("/shop/portal", {
       method: "POST",
-      body: { product_id: productId, user_id: userId },
+      body: { user_id: userId },
     });
   },
 };

@@ -25,7 +25,7 @@ class User < ApplicationRecord
       except: [
         :email, :phone, :notification_preferences,
         :password_digest, :reset_token_digest, :reset_token_sent_at,
-        :stripe_customer_id
+        :stripe_customer_id, :stripe_subscription_id
       ]
     }.merge(options))
   end

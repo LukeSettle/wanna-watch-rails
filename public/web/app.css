@@ -1202,6 +1202,19 @@ button.game-row {
   margin: 0;
 }
 
+.library-scroll-sentinel {
+  grid-column: 1 / -1;
+  min-height: 1px;
+  padding: 8px 0 16px;
+  text-align: center;
+}
+
+.library-scroll-sentinel.loading::after {
+  content: "Loading more…";
+  color: var(--muted, rgba(255, 255, 255, 0.55));
+  font-size: 0.9rem;
+}
+
 .library-friend-label {
   display: block;
   margin-bottom: 6px;

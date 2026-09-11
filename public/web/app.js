@@ -1,5 +1,6 @@
 // WannaWatch web client. Single-page app with no build step.
-// Screens: name -> home/create -> lobby -> match (swiping) -> waiting -> results.
+// Screens: name -> home -> invite partner -> match (swiping) -> waiting -> results.
+// First-match games require a partner before swiping.
 
 const state = {
   user: null,
@@ -423,6 +424,18 @@ function isContinuous() {
   return isEndless() || isFirstMatch();
 }
 
+function playerCount() {
+  return state.game?.players?.length || 0;
+}
+
+function hasPartner() {
+  return playerCount() >= 2;
+}
+
+function needsPartnerInvite() {
+  return isFirstMatch() && !hasPartner();
+}
+
 function matchedIdsOf(game) {
   const lists = (game?.players || []).map((p) => normalizeMediaKeyList(p.liked_movie_ids || []));
   if (lists.length < 2) return [];
@@ -431,7 +444,14 @@ function matchedIdsOf(game) {
 
 function applyGameUpdate(game) {
   const previous = state.game;
+  const hadPartner = (previous?.players?.length || 0) >= 2;
   state.game = game;
+  const nowHasPartner = (game.players?.length || 0) >= 2;
+
+  if (!hadPartner && nowHasPartner && isFirstMatch()) {
+    toast("Your partner joined — let's swipe!");
+    fetchMovies();
+  }
 
   if (previous && game.load_more_count > previous.load_more_count && game.mode !== "endless") {
     state.finishedSent = false;
@@ -458,7 +478,7 @@ setInterval(async () => {
 
   const screen = screenName();
   const socketOpen = cable?.isOpen();
-  const needsLivePlayers = ["lobby", "waiting", "results"].includes(screen) ||
+  const needsLivePlayers = ["lobby", "waiting", "results", "invitePartner"].includes(screen) ||
     (screen === "match" && isContinuous());
   if (socketOpen && !needsLivePlayers) return;
 
@@ -549,11 +569,19 @@ async function createGame(values) {
   startGame(game);
 }
 
-async function quickPlay() {
+async function startMovieNight() {
   try {
-    await createGame(defaultGameValues());
+    const query = buildDiscoverQuery(defaultGameValues());
+    const game = await backend.upsertGame({
+      entry_code: generateEntryCode(),
+      query: JSON.stringify(query),
+      user_id: state.user.id,
+      providers: state.user.providers || [],
+      mode: "first_match",
+    });
+    startGame(game);
   } catch {
-    toast("Something went wrong creating the game.");
+    toast("Something went wrong. Try again.");
   }
 }
 
@@ -775,7 +803,11 @@ function screenName() {
   if (state.view === "login" || state.view === "reset" || state.view === "shop") return state.view;
   if (!state.user?.username) return "name";
   if (!state.game) return state.view;
-  if (isFirstMatch()) return state.game.finished_at ? "matchFound" : "match";
+  if (isFirstMatch()) {
+    if (state.game.finished_at) return "matchFound";
+    if (!hasPartner()) return "invitePartner";
+    return "match";
+  }
   if (isEndless()) return "match";
   const me = currentPlayer();
   if (state.game.finished_at) return "results";
@@ -789,7 +821,7 @@ function render() {
   document.body.classList.toggle("lock-scroll", screen === "match");
   const key = renderKeyFor(screen);
   if (key === lastRenderKey) {
-    if (screen === "lobby" || screen === "waiting") updateDynamicLists(screen);
+    if (screen === "lobby" || screen === "waiting" || screen === "invitePartner") updateDynamicLists(screen);
     return;
   }
   lastRenderKey = key;
@@ -805,6 +837,7 @@ function render() {
     create: renderCreateScreen,
     history: renderHistoryScreen,
     lobby: renderLobbyScreen,
+    invitePartner: renderInvitePartnerScreen,
     match: renderMatchScreen,
     matchFound: renderMatchFoundScreen,
     waiting: renderWaitingScreen,
@@ -823,7 +856,9 @@ function renderKeyFor(screen) {
     return `match-${state.game.id}-${state.game.load_more_count}-${state.movies.length}-${state.fetchingMovies}-${state.noMoreMovies}-${state.finishedSent}`;
   }
   if (screen === "matchFound") return `matchFound-${state.game.id}`;
-  if (screen === "lobby" || screen === "waiting") return `${screen}-${state.game.id}`;
+  if (screen === "lobby" || screen === "waiting" || screen === "invitePartner") {
+    return `${screen}-${state.game.id}-${playerCount()}-${outgoingInvitesForGame(state.game.id).length}`;
+  }
   if (screen === "results") return `results-${state.game.id}-${state.game.finished_at}`;
   return `${screen}-${Date.now()}`;
 }
@@ -861,8 +896,8 @@ function renderNameScreen() {
   app.innerHTML = `
     <div class="screen center">
       <img src="/logo.png" alt="WannaWatch" class="logo">
-      <h1 class="headline">So… what do you <span class="accent">wanna watch</span>?</h1>
-      <p class="muted">Swipe movies with friends. Match on the ones you all like.</p>
+      <h1 class="headline">Pick tonight's movie <span class="accent">together</span></h1>
+      <p class="muted">Swipe with your partner until you both like the same movie — first match wins.</p>
       <form id="name-form" class="card form-card">
         <label for="username">What should we call you?</label>
         <input id="username" name="username" maxlength="30" placeholder="Enter your name" required autocomplete="nickname">
@@ -1015,13 +1050,13 @@ function renderHomeScreen() {
     ${topBarHtml(`<button class="link" id="edit-name">${usernameWithFlair(state.user)}</button>`)}
     <div class="screen">
       <div class="hero">
-        <h1 class="headline">Movie night, <span class="accent">solved</span>.</h1>
-        <p class="muted">Start a game, share the code, and swipe until you all like the same movie. First match wins — that's tonight's pick.</p>
+        <h1 class="headline">Movie night with your <span class="accent">partner</span></h1>
+        <p class="muted">Invite your spouse or friend, then swipe together until you match on one movie. First match wins — that's tonight's pick.</p>
       </div>
 
       ${accountNudgeHtml("home")}
 
-      <button class="btn btn-primary btn-big" id="quick-play">▶ Quick play</button>
+      <button class="btn btn-primary btn-big" id="start-movie-night">Start movie night</button>
       <button class="btn btn-ghost" id="create-game">Custom game (optional filters)</button>
       ${isPlus() ? "" : `<button class="btn btn-secondary" id="open-shop">WannaWatch+</button>`}
 
@@ -1080,9 +1115,9 @@ function renderHomeScreen() {
   bindAccountNudge();
   bindAdSlots(app);
 
-  document.getElementById("quick-play").addEventListener("click", (event) => {
+  document.getElementById("start-movie-night").addEventListener("click", (event) => {
     event.target.disabled = true;
-    quickPlay();
+    startMovieNight();
   });
 
   document.getElementById("create-game").addEventListener("click", () => {
@@ -1276,7 +1311,7 @@ function renderFriendsList() {
   if (!container) return;
 
   if (state.friends.length === 0) {
-    container.innerHTML = `<p class="muted">Play a game with someone and they'll show up here — then you can invite them in-app.</p>`;
+    container.innerHTML = `<p class="muted">After your first movie night together, partners show up here for one-tap invites.</p>`;
     return;
   }
 
@@ -1285,7 +1320,7 @@ function renderFriendsList() {
       <div class="friend-info">
         <strong>${esc(friend.username || "Player")}</strong>
       </div>
-      <button class="btn btn-secondary btn-small" data-play="${friend.id}">Play</button>
+      <button class="btn btn-secondary btn-small" data-play="${friend.id}">Movie night</button>
     </div>`).join("");
 
   container.querySelectorAll("[data-play]").forEach((btn) => {
@@ -1525,7 +1560,7 @@ async function renderCreateScreen() {
 
         <div class="button-row sticky-actions">
           <button type="button" class="btn btn-ghost" id="cancel-create">Back</button>
-          <button type="submit" class="btn btn-primary" id="create-submit">Start swiping</button>
+          <button type="submit" class="btn btn-primary" id="create-submit">Invite partner & play</button>
         </div>
       </form>
     </div>`;
@@ -1796,6 +1831,134 @@ function messageFeedHtml() {
 
 function shareLink() {
   return `${location.origin}/?entry_code=${state.game.entry_code}`;
+}
+
+function inviteMessageBody() {
+  const link = shareLink();
+  const code = state.game.entry_code;
+  return `Let's pick tonight's movie together on WannaWatch! Swipe until we match — first match wins.\n\nJoin: ${link}\n\nOr enter code: ${code}`;
+}
+
+function textInvitePartner() {
+  const body = encodeURIComponent(inviteMessageBody());
+  window.location.href = `sms:?&body=${body}`;
+}
+
+function inviteFriendListHtml(invitableFriends, pendingByFriend) {
+  if (invitableFriends.length === 0) {
+    return `<p class="muted">Everyone on your friends list has been invited. Text them the link below or wait for them to join.</p>`;
+  }
+
+  return invitableFriends.map((friend) => {
+    const pending = pendingByFriend.get(friend.id);
+    return `
+    <div class="friend-row">
+      <div class="friend-info">
+        <strong>${esc(friend.username || "Partner")}</strong>
+        ${pending ? `<span class="muted">Invite sent — waiting…</span>` : ""}
+      </div>
+      <div class="friend-actions">
+        ${pending
+          ? `<button class="btn btn-ghost btn-small" data-nudge="${pending.id}">Nudge</button>`
+          : `<button class="btn btn-secondary btn-small" data-invite-friend="${friend.id}">Invite</button>`}
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function renderInvitePartnerScreen() {
+  const pendingInvites = outgoingInvitesForGame(state.game.id);
+  const playerIds = new Set((state.game.players || []).map((p) => p.user?.id));
+  const invitableFriends = state.friends.filter((f) => !playerIds.has(f.id));
+  const pendingByFriend = new Map(pendingInvites.map((i) => [i.invitee?.id, i]));
+  const hasFriends = state.friends.length > 0;
+
+  app.innerHTML = `
+    ${topBarHtml(`<span class="muted">Invite your partner</span>`)}
+    <div class="screen invite-partner-screen">
+      <div class="invite-hero card">
+        <h1 class="headline-sm">Match on tonight's movie <span class="accent">together</span></h1>
+        <p class="muted invite-lede">WannaWatch is built for two — you and your partner each swipe. The first movie you both like is tonight's pick.</p>
+      </div>
+
+      ${hasFriends ? `
+        <section class="card list-card">
+          <h2>Pick your partner</h2>
+          <p class="muted section-hint">Choose someone from your friends list.</p>
+          <div id="invite-friend-list">${inviteFriendListHtml(invitableFriends, pendingByFriend)}</div>
+        </section>
+      ` : ""}
+
+      <section class="card list-card">
+        <h2>${hasFriends ? "Or invite someone new" : "Invite your partner"}</h2>
+        ${hasFriends ? "" : `<p class="muted section-hint">Text them the link — they'll swipe with you on their phone.</p>`}
+        <div class="code-card compact-code">
+          <p class="muted">Game code</p>
+          <div class="entry-code">${esc(state.game.entry_code)}</div>
+        </div>
+        <button class="btn btn-primary btn-big" id="text-invite">Text invite link</button>
+        <button class="btn btn-secondary" id="copy-invite-link">Copy invite link</button>
+        <p class="muted invite-disclaimer center-text">Your partner can also open WannaWatch and enter code <strong>${esc(state.game.entry_code)}</strong> to join.</p>
+      </section>
+
+      ${pendingInvites.length > 0 ? `
+        <section class="card list-card waiting-card">
+          <h2>Waiting for your partner</h2>
+          <p class="muted">We'll start swiping as soon as they join.</p>
+          <div class="waiting-pulse"><div class="spinner"></div></div>
+          ${pendingInvites.map((invite) => `
+            <div class="friend-row">
+              <div class="friend-info">
+                <strong>${esc(invite.invitee?.username || "Partner")}</strong>
+                <span class="muted">Invite sent</span>
+              </div>
+              <button class="btn btn-ghost btn-small" data-nudge="${invite.id}">Nudge</button>
+            </div>
+          `).join("")}
+        </section>
+      ` : ""}
+
+      <section class="card list-card">
+        <h2>In this game</h2>
+        <div id="player-list">${playerListHtml()}</div>
+      </section>
+
+      <button class="link" id="leave-game">Cancel</button>
+    </div>`;
+
+  bindBrandHome();
+
+  document.getElementById("text-invite").addEventListener("click", textInvitePartner);
+  document.getElementById("copy-invite-link").addEventListener("click", async () => {
+    await navigator.clipboard.writeText(shareLink());
+    toast("Invite link copied!");
+  });
+  document.getElementById("leave-game").addEventListener("click", leaveGame);
+
+  document.querySelectorAll("[data-invite-friend]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      const invite = await inviteFriendToGame(Number(btn.dataset.inviteFriend), state.game.id);
+      if (!invite) btn.disabled = false;
+      else {
+        lastRenderKey = null;
+        render();
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-nudge]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        await backend.nudgeGameInvite(Number(btn.dataset.nudge), state.user.id);
+        toast("Nudge sent.");
+      } catch (error) {
+        toast(error.serverMessage || "Couldn't send nudge.");
+        btn.disabled = false;
+      }
+    });
+  });
 }
 
 function renderLobbyScreen() {
@@ -2390,7 +2553,9 @@ function renderContinuousMatchScreen() {
              <span class="endless-tag">Endless</span>`
           : `<span id="deck-counter" class="muted"></span>
              <span class="endless-tag">First match wins</span>`}
-        <button type="button" class="meta-pill" id="invite-pill">+ Invite</button>
+        ${isFirstMatch()
+          ? `<span class="muted partner-tag">${playerCount()} players</span>`
+          : `<button type="button" class="meta-pill" id="invite-pill">+ Invite</button>`}
       </div>
       <div class="deck" id="deck"></div>
       <div class="swipe-actions">
@@ -2406,7 +2571,7 @@ function renderContinuousMatchScreen() {
   updateUndoButton();
 
   document.getElementById("matches-pill")?.addEventListener("click", showMatchesModal);
-  document.getElementById("invite-pill").addEventListener("click", async () => {
+  document.getElementById("invite-pill")?.addEventListener("click", async () => {
     await navigator.clipboard.writeText(shareLink());
     toast("Invite link copied — anyone can join and swipe on their own time!");
   });
@@ -2451,7 +2616,7 @@ async function renderMatchFoundScreen() {
   });
   document.getElementById("play-again").addEventListener("click", (event) => {
     event.target.disabled = true;
-    quickPlay();
+    startMovieNight();
   });
   document.getElementById("back-home").addEventListener("click", leaveGame);
 

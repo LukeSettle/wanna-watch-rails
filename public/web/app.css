@@ -719,6 +719,47 @@ button.game-row {
 
 .code-card { text-align: center; }
 
+.compact-code .entry-code {
+  font-size: 2rem;
+  letter-spacing: 8px;
+  text-indent: 8px;
+  margin: 4px 0 12px;
+}
+
+.invite-partner-screen .invite-hero {
+  text-align: center;
+}
+
+.invite-lede {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.section-hint {
+  margin: -4px 0 12px;
+  font-size: 0.9rem;
+}
+
+.invite-disclaimer {
+  margin: 12px 0 0;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.invite-disclaimer strong {
+  letter-spacing: 2px;
+}
+
+.waiting-card .waiting-pulse {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 4px;
+}
+
+.partner-tag {
+  font-size: 0.85rem;
+}
+
 .entry-code {
   font-size: 2.6rem;
   font-weight: 900;

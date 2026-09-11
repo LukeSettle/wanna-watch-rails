@@ -26,6 +26,7 @@ Rails.application.routes.draw do
       post :join
       post :leave
       post :ready
+      post :begin
       post :finish_matching
       post :swipe
       post :undo_swipe

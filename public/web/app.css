@@ -760,6 +760,29 @@ button.game-row {
   font-size: 0.85rem;
 }
 
+.friend-list-scroll {
+  max-height: 240px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-right: 2px;
+}
+
+.invite-start-hint {
+  margin: -4px 0 8px;
+  font-size: 0.88rem;
+}
+
+.ok-text {
+  color: var(--like);
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.full-width {
+  width: 100%;
+  max-width: 100%;
+}
+
 .entry-code {
   font-size: 2.6rem;
   font-weight: 900;

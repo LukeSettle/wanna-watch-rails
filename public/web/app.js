@@ -3242,6 +3242,7 @@ function bindPlusNudge(root) {
 }
 
 async function renderHistoryScreen() {
+  teardownLibraryGridPagination();
   app.innerHTML = `
     ${topBarHtml("")}
     <div class="screen library-screen">
@@ -3500,7 +3501,7 @@ async function renderLibraryFriends(container) {
 
   await fillLibraryGrid(
     document.getElementById("library-grid"),
-    shared.slice(0, 40).map((key) => ({
+    shared.map((key) => ({
       key,
       subtitle: `You & ${friend.username} both liked this`,
       withNames: friend.username,
@@ -3545,14 +3546,51 @@ function settleOnTitle(key, movie, withNames = "") {
   if (movie) openMovieModal(movie.id, movie.media_type);
 }
 
-async function fillLibraryGrid(grid, items) {
-  if (!grid) return;
-  if (!items.length) {
-    grid.innerHTML = "";
-    return;
-  }
+let libraryGridPagination = null;
 
-  grid.innerHTML = `<p class="muted">Loading movies…</p>`;
+function teardownLibraryGridPagination() {
+  libraryGridPagination?.observer?.disconnect();
+  libraryGridPagination = null;
+}
+
+function libraryCardHtml({ item, movie, mediaType }) {
+  const year = movie.release_date ? movie.release_date.slice(0, 4) : "";
+  const poster = posterUrl(movie.poster_path, "w342");
+  const media = movie.media_type || mediaType || "movie";
+  const providers = preferredFlatrateProviders(movie);
+  const watchLabel = providers[0] ? `Watch on ${providers[0].provider_name}` : "Watch tonight";
+  return `
+    <article class="result-card actionable" data-id="${esc(item.key)}" data-media="${media}" data-with="${esc(item.withNames || "")}">
+      <button type="button" class="result-card-main" data-open-match>
+        ${poster ? `<img src="${poster}" alt="${esc(movie.title)}">` : `<div class="poster-missing">${esc(movie.title)}</div>`}
+        <div class="result-info">
+          <strong>${esc(movie.title)}</strong>
+          <span class="muted">${esc(item.subtitle || `${year} · ★ ${movie.vote_average ? movie.vote_average.toFixed(1) : "–"}`)}</span>
+        </div>
+      </button>
+      <div class="match-actions compact">
+        ${item.showSettle
+          ? `<button type="button" class="btn btn-secondary btn-small" data-settle>Tonight</button>`
+          : ""}
+        ${watchTonightUrl(movie)
+          ? `<a class="btn btn-primary btn-small" href="${esc(watchTonightUrl(movie))}" target="_blank" rel="noopener noreferrer">${esc(watchLabel)}</a>`
+          : ""}
+        <button type="button" class="btn btn-ghost btn-small" data-share-match>Share</button>
+      </div>
+    </article>`;
+}
+
+function bindLibraryCard(card, { item, movie, id, mediaType }) {
+  card.querySelector("[data-open-match]")?.addEventListener("click", () => openMovieModal(id, mediaType));
+  card.querySelector("[data-settle]")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    settleOnTitle(item.key, movie, item.withNames || card.dataset.with || "");
+  });
+  bindMatchActions(card, movie);
+}
+
+async function resolveLibraryItems(items) {
   const resolved = [];
   for (const item of items) {
     const { id, mediaType } = parseMediaKey(item.key);
@@ -3560,50 +3598,92 @@ async function fillLibraryGrid(grid, items) {
     if (!movie) continue;
     resolved.push({ item, movie, id, mediaType });
   }
+  return resolved;
+}
 
-  if (!grid.isConnected) return;
-  if (!resolved.length) {
-    grid.innerHTML = `<p class="muted">Couldn't load those titles.</p>`;
+async function appendLibraryGridItems(grid, items) {
+  const resolved = await resolveLibraryItems(items);
+  if (!grid?.isConnected || !resolved.length) return 0;
+
+  const fragment = document.createDocumentFragment();
+  resolved.forEach((entry) => {
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = libraryCardHtml(entry);
+    const card = wrapper.firstElementChild;
+    bindLibraryCard(card, entry);
+    fragment.appendChild(card);
+  });
+  grid.insertBefore(fragment, grid.querySelector(".library-scroll-sentinel"));
+  return resolved.length;
+}
+
+async function setupPaginatedLibraryGrid(grid, items) {
+  teardownLibraryGridPagination();
+  if (!grid) return;
+  if (!items.length) {
+    grid.innerHTML = "";
     return;
   }
 
-  grid.innerHTML = resolved.map(({ item, movie, mediaType }) => {
-    const year = movie.release_date ? movie.release_date.slice(0, 4) : "";
-    const poster = posterUrl(movie.poster_path, "w342");
-    const media = movie.media_type || mediaType || "movie";
-    const providers = preferredFlatrateProviders(movie);
-    const watchLabel = providers[0] ? `Watch on ${providers[0].provider_name}` : "Watch tonight";
-    return `
-      <article class="result-card actionable" data-id="${esc(item.key)}" data-media="${media}" data-with="${esc(item.withNames || "")}">
-        <button type="button" class="result-card-main" data-open-match>
-          ${poster ? `<img src="${poster}" alt="${esc(movie.title)}">` : `<div class="poster-missing">${esc(movie.title)}</div>`}
-          <div class="result-info">
-            <strong>${esc(movie.title)}</strong>
-            <span class="muted">${esc(item.subtitle || `${year} · ★ ${movie.vote_average ? movie.vote_average.toFixed(1) : "–"}`)}</span>
-          </div>
-        </button>
-        <div class="match-actions compact">
-          ${item.showSettle
-            ? `<button type="button" class="btn btn-secondary btn-small" data-settle>Tonight</button>`
-            : ""}
-          ${watchTonightUrl(movie)
-            ? `<a class="btn btn-primary btn-small" href="${esc(watchTonightUrl(movie))}" target="_blank" rel="noopener noreferrer">${esc(watchLabel)}</a>`
-            : ""}
-          <button type="button" class="btn btn-ghost btn-small" data-share-match>Share</button>
-        </div>
-      </article>`;
-  }).join("");
+  grid.innerHTML = `<p class="muted">Loading movies…</p>`;
 
-  [...grid.querySelectorAll(".result-card")].forEach((card, index) => {
-    const { item, movie, id, mediaType } = resolved[index];
-    card.querySelector("[data-open-match]")?.addEventListener("click", () => openMovieModal(id, mediaType));
-    card.querySelector("[data-settle]")?.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      settleOnTitle(item.key, movie, item.withNames || card.dataset.with || "");
-    });
-    bindMatchActions(card, movie);
-  });
+  const page = { loaded: 0, loading: false, items };
+  const sentinel = document.createElement("div");
+  sentinel.className = "library-scroll-sentinel";
+  sentinel.setAttribute("aria-hidden", "true");
+
+  let observer = null;
+
+  const finishPagination = () => {
+    sentinel.remove();
+    observer?.disconnect();
+    libraryGridPagination = null;
+  };
+
+  const loadNextPage = async () => {
+    if (page.loading || page.loaded >= page.items.length) return;
+    page.loading = true;
+    sentinel.classList.add("loading");
+
+    const isFirstPage = page.loaded === 0;
+    if (isFirstPage) grid.innerHTML = "";
+
+    const batch = page.items.slice(page.loaded, page.loaded + LIBRARY_PAGE_SIZE);
+    const appended = await appendLibraryGridItems(grid, batch);
+    page.loaded += batch.length;
+    page.loading = false;
+    sentinel.classList.remove("loading");
+
+    if (!grid.isConnected) return;
+
+    if (isFirstPage && appended === 0) {
+      grid.innerHTML = `<p class="muted">Couldn't load those titles.</p>`;
+      finishPagination();
+      return;
+    }
+
+    if (page.loaded >= page.items.length) {
+      finishPagination();
+      return;
+    }
+
+    if (!grid.contains(sentinel)) {
+      grid.appendChild(sentinel);
+      if (!observer) {
+        observer = new IntersectionObserver((entries) => {
+          if (entries.some((entry) => entry.isIntersecting)) loadNextPage();
+        }, { rootMargin: "300px 0px" });
+        libraryGridPagination = { observer, grid };
+        observer.observe(sentinel);
+      }
+    }
+  };
+
+  await loadNextPage();
+}
+
+async function fillLibraryGrid(grid, items) {
+  await setupPaginatedLibraryGrid(grid, items);
 }
 
 boot();

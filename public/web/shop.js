@@ -24,6 +24,7 @@ function openPlusShop() {
 }
 
 const LIBRARY_FREE_LIMIT = 10;
+const LIBRARY_PAGE_SIZE = 25;
 
 function flairBadgeHtml(user = state.user) {
   if (!user?.entitlements?.lobby_flair && !user?.entitlements?.supporter) return "";

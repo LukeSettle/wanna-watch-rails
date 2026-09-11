@@ -199,6 +199,24 @@ class GamesController < ApiController
     render_game(game)
   end
 
+  def begin
+    game = Game.find(params[:id])
+    user = User.find(params[:user_id])
+
+    unless game.user_id == user.id
+      return render json: { error: "Only the host can start the game" }, status: :forbidden
+    end
+
+    if game.players.count < 2
+      return render json: { error: "Add a friend to the game first" }, status: :unprocessable_entity
+    end
+
+    game.start unless game.started_at.present?
+    broadcast_to_game(game, "#{user.username} started the game")
+
+    render_game(game)
+  end
+
   def finish_matching
     game = Game.find(params[:id])
     user = User.find(params[:user_id])

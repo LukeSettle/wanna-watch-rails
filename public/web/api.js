@@ -125,6 +125,9 @@ const backend = {
   ready(gameId, userId) {
     return backendRequest(`/games/${gameId}/ready`, { method: "POST", body: { user_id: userId } });
   },
+  beginGame(gameId, userId) {
+    return backendRequest(`/games/${gameId}/begin`, { method: "POST", body: { user_id: userId } });
+  },
   finishMatching(gameId, userId, likedMovieIds, seenMovieIds) {
     return backendRequest(`/games/${gameId}/finish_matching`, {
       method: "POST",

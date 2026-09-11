@@ -416,6 +416,10 @@ function isEndless() {
   return state.game?.mode === "endless";
 }
 
+function isClassic() {
+  return state.game?.mode === "classic" || !state.game?.mode;
+}
+
 function isFirstMatch() {
   return state.game?.mode === "first_match";
 }
@@ -432,8 +436,17 @@ function hasPartner() {
   return playerCount() >= 2;
 }
 
-function needsPartnerInvite() {
-  return isFirstMatch() && !hasPartner();
+function isHost() {
+  return state.game?.user_id === state.user?.id;
+}
+
+function gameHasBegun() {
+  return Boolean(state.game?.started_at);
+}
+
+function shouldShowInviteScreen() {
+  if (!state.game || state.game.finished_at) return false;
+  return !gameHasBegun();
 }
 
 function matchedIdsOf(game) {
@@ -448,9 +461,12 @@ function applyGameUpdate(game) {
   state.game = game;
   const nowHasPartner = (game.players?.length || 0) >= 2;
 
-  if (!hadPartner && nowHasPartner && isFirstMatch()) {
-    toast("Your partner joined — let's swipe!");
-    fetchMovies();
+  const hadBegun = Boolean(previous?.started_at);
+  if (!hadPartner && nowHasPartner) {
+    toast(isHost() ? "Your partner joined — tap Start when you're ready!" : "Your partner joined!");
+  }
+  if (!hadBegun && game.started_at) {
+    if (!isClassic()) fetchMovies();
   }
 
   if (previous && game.load_more_count > previous.load_more_count && game.mode !== "endless") {
@@ -478,7 +494,7 @@ setInterval(async () => {
 
   const screen = screenName();
   const socketOpen = cable?.isOpen();
-  const needsLivePlayers = ["lobby", "waiting", "results", "invitePartner"].includes(screen) ||
+  const needsLivePlayers = ["lobby", "waiting", "results", "invitePartner", "waitingToStart"].includes(screen) ||
     (screen === "match" && isContinuous());
   if (socketOpen && !needsLivePlayers) return;
 
@@ -803,9 +819,12 @@ function screenName() {
   if (state.view === "login" || state.view === "reset" || state.view === "shop") return state.view;
   if (!state.user?.username) return "name";
   if (!state.game) return state.view;
+  if (shouldShowInviteScreen()) {
+    return isHost() ? "invitePartner" : "waitingToStart";
+  }
+
   if (isFirstMatch()) {
     if (state.game.finished_at) return "matchFound";
-    if (!hasPartner()) return "invitePartner";
     return "match";
   }
   if (isEndless()) return "match";
@@ -821,7 +840,9 @@ function render() {
   document.body.classList.toggle("lock-scroll", screen === "match");
   const key = renderKeyFor(screen);
   if (key === lastRenderKey) {
-    if (screen === "lobby" || screen === "waiting" || screen === "invitePartner") updateDynamicLists(screen);
+    if (screen === "lobby" || screen === "waiting" || screen === "invitePartner" || screen === "waitingToStart") {
+    updateDynamicLists(screen);
+  }
     return;
   }
   lastRenderKey = key;
@@ -838,6 +859,7 @@ function render() {
     history: renderHistoryScreen,
     lobby: renderLobbyScreen,
     invitePartner: renderInvitePartnerScreen,
+    waitingToStart: renderWaitingToStartScreen,
     match: renderMatchScreen,
     matchFound: renderMatchFoundScreen,
     waiting: renderWaitingScreen,
@@ -856,8 +878,8 @@ function renderKeyFor(screen) {
     return `match-${state.game.id}-${state.game.load_more_count}-${state.movies.length}-${state.fetchingMovies}-${state.noMoreMovies}-${state.finishedSent}`;
   }
   if (screen === "matchFound") return `matchFound-${state.game.id}`;
-  if (screen === "lobby" || screen === "waiting" || screen === "invitePartner") {
-    return `${screen}-${state.game.id}-${playerCount()}-${outgoingInvitesForGame(state.game.id).length}`;
+  if (screen === "lobby" || screen === "waiting" || screen === "invitePartner" || screen === "waitingToStart") {
+    return `${screen}-${state.game.id}-${playerCount()}-${outgoingInvitesForGame(state.game.id).length}-${gameHasBegun()}`;
   }
   if (screen === "results") return `results-${state.game.id}-${state.game.finished_at}`;
   return `${screen}-${Date.now()}`;
@@ -870,6 +892,28 @@ function updateDynamicLists(screen) {
   const feed = document.getElementById("message-feed");
   if (feed) feed.innerHTML = messageFeedHtml();
   if (screen === "lobby") renderLobbyInvites();
+  if (screen === "invitePartner") {
+    const list = document.getElementById("invite-friend-list");
+    const players = document.getElementById("player-list");
+    const beginBtn = document.getElementById("begin-game");
+    const { pendingByFriend } = inviteScreenFriendData();
+    if (list) list.innerHTML = inviteFriendListHtml(pendingByFriend);
+    if (players) players.innerHTML = playerListHtml();
+    if (beginBtn) {
+      beginBtn.disabled = !hasPartner();
+      beginBtn.textContent = hasPartner() ? "Start swiping" : "Add a friend to start";
+    }
+    const hint = document.querySelector(".invite-start-hint");
+    if (hint) {
+      hint.textContent = hasPartner()
+        ? `${playerCount() - 1} friend${playerCount() === 2 ? "" : "s"} ready — tap Start when everyone's in.`
+        : "Invite at least one friend, then tap Start.";
+    }
+  }
+  if (screen === "waitingToStart") {
+    const players = document.getElementById("player-list");
+    if (players) players.innerHTML = playerListHtml();
+  }
 }
 
 function topBarHtml(subtitle) {
@@ -1056,7 +1100,7 @@ function renderHomeScreen() {
 
       ${accountNudgeHtml("home")}
 
-      <button class="btn btn-primary btn-big" id="start-movie-night">Start movie night</button>
+      <button class="btn btn-primary btn-big" id="quick-play">Quick play</button>
       <button class="btn btn-ghost" id="create-game">Custom game (optional filters)</button>
       ${isPlus() ? "" : `<button class="btn btn-secondary" id="open-shop">WannaWatch+</button>`}
 
@@ -1115,7 +1159,7 @@ function renderHomeScreen() {
   bindAccountNudge();
   bindAdSlots(app);
 
-  document.getElementById("start-movie-night").addEventListener("click", (event) => {
+  document.getElementById("quick-play").addEventListener("click", (event) => {
     event.target.disabled = true;
     startMovieNight();
   });
@@ -1560,7 +1604,7 @@ async function renderCreateScreen() {
 
         <div class="button-row sticky-actions">
           <button type="button" class="btn btn-ghost" id="cancel-create">Back</button>
-          <button type="submit" class="btn btn-primary" id="create-submit">Invite partner & play</button>
+          <button type="submit" class="btn btn-primary" id="create-submit">Invite friends</button>
         </div>
       </form>
     </div>`;
@@ -1844,73 +1888,148 @@ function textInvitePartner() {
   window.location.href = `sms:?&body=${body}`;
 }
 
-function inviteFriendListHtml(invitableFriends, pendingByFriend) {
-  if (invitableFriends.length === 0) {
-    return `<p class="muted">Everyone on your friends list has been invited. Text them the link below or wait for them to join.</p>`;
+function inviteFriendListHtml(pendingByFriend) {
+  if (state.friends.length === 0) {
+    return `<p class="muted">No friends yet — text someone the link above, or they'll show up here after your first game together.</p>`;
   }
 
-  return invitableFriends.map((friend) => {
+  return state.friends.map((friend) => {
     const pending = pendingByFriend.get(friend.id);
+    const inGame = (state.game.players || []).some((p) => p.user?.id === friend.id);
     return `
     <div class="friend-row">
       <div class="friend-info">
-        <strong>${esc(friend.username || "Partner")}</strong>
-        ${pending ? `<span class="muted">Invite sent — waiting…</span>` : ""}
+        <strong>${esc(friend.username || "Friend")}</strong>
+        ${inGame
+          ? `<span class="muted">In game</span>`
+          : pending
+            ? `<span class="muted">Invite sent — waiting…</span>`
+            : ""}
       </div>
       <div class="friend-actions">
-        ${pending
-          ? `<button class="btn btn-ghost btn-small" data-nudge="${pending.id}">Nudge</button>`
-          : `<button class="btn btn-secondary btn-small" data-invite-friend="${friend.id}">Invite</button>`}
+        ${inGame
+          ? `<span class="muted ok-text">Joined</span>`
+          : pending
+            ? `<button class="btn btn-ghost btn-small" data-nudge="${pending.id}">Nudge</button>`
+            : `<button class="btn btn-secondary btn-small" data-invite-friend="${friend.id}">Add</button>`}
       </div>
     </div>`;
   }).join("");
 }
 
-function renderInvitePartnerScreen() {
+function inviteScreenFriendData() {
   const pendingInvites = outgoingInvitesForGame(state.game.id);
-  const playerIds = new Set((state.game.players || []).map((p) => p.user?.id));
-  const invitableFriends = state.friends.filter((f) => !playerIds.has(f.id));
   const pendingByFriend = new Map(pendingInvites.map((i) => [i.invitee?.id, i]));
-  const hasFriends = state.friends.length > 0;
+  return { pendingInvites, pendingByFriend };
+}
+
+function bindInvitePartnerEvents() {
+  const root = document.querySelector(".invite-partner-screen");
+  if (!root || root.dataset.inviteBound) return;
+  root.dataset.inviteBound = "1";
+
+  root.addEventListener("click", async (event) => {
+    const inviteBtn = event.target.closest("[data-invite-friend]");
+    if (inviteBtn) {
+      inviteBtn.disabled = true;
+      const invite = await inviteFriendToGame(Number(inviteBtn.dataset.inviteFriend), state.game.id);
+      if (!invite) inviteBtn.disabled = false;
+      else {
+        lastRenderKey = null;
+        render();
+      }
+      return;
+    }
+
+    const nudgeBtn = event.target.closest("[data-nudge]");
+    if (nudgeBtn) {
+      nudgeBtn.disabled = true;
+      try {
+        await backend.nudgeGameInvite(Number(nudgeBtn.dataset.nudge), state.user.id);
+        toast("Nudge sent.");
+      } catch (error) {
+        toast(error.serverMessage || "Couldn't send nudge.");
+        nudgeBtn.disabled = false;
+      }
+    }
+  });
+
+  document.getElementById("text-invite")?.addEventListener("click", textInvitePartner);
+  document.getElementById("copy-invite-link")?.addEventListener("click", async () => {
+    await navigator.clipboard.writeText(shareLink());
+    toast("Invite link copied!");
+  });
+  document.getElementById("copy-invite-code")?.addEventListener("click", async () => {
+    await navigator.clipboard.writeText(state.game.entry_code);
+    toast("Code copied!");
+  });
+  document.getElementById("leave-game")?.addEventListener("click", leaveGame);
+  document.getElementById("begin-game")?.addEventListener("click", beginGameFromInvite);
+}
+
+async function beginGameFromInvite() {
+  if (!hasPartner()) {
+    toast("Add a friend to the game first.");
+    return;
+  }
+  const btn = document.getElementById("begin-game");
+  if (btn) btn.disabled = true;
+  try {
+    applyGameUpdate(await backend.beginGame(state.game.id, state.user.id));
+    if (!isClassic()) fetchMovies();
+    lastRenderKey = null;
+    render();
+  } catch (error) {
+    toast(error.serverMessage || "Could not start the game. Try again.");
+    if (btn) btn.disabled = false;
+  }
+}
+
+function renderInvitePartnerScreen() {
+  refreshFriendsAndInvites();
+  const { pendingInvites, pendingByFriend } = inviteScreenFriendData();
+  const modeLabel = isFirstMatch()
+    ? "First match wins — that's tonight's pick."
+    : isEndless()
+      ? "Keep swiping and get alerted on every match."
+      : "Everyone swipes the same deck, then compare picks.";
 
   app.innerHTML = `
-    ${topBarHtml(`<span class="muted">Invite your partner</span>`)}
+    ${topBarHtml(`<span class="muted">Invite friends</span>`)}
     <div class="screen invite-partner-screen">
       <div class="invite-hero card">
-        <h1 class="headline-sm">Match on tonight's movie <span class="accent">together</span></h1>
-        <p class="muted invite-lede">WannaWatch is built for two — you and your partner each swipe. The first movie you both like is tonight's pick.</p>
+        <h1 class="headline-sm">Add friends to your <span class="accent">movie night</span></h1>
+        <p class="muted invite-lede">Invite your partner or friends, then start swiping together. ${modeLabel}</p>
       </div>
 
-      ${hasFriends ? `
-        <section class="card list-card">
-          <h2>Pick your partner</h2>
-          <p class="muted section-hint">Choose someone from your friends list.</p>
-          <div id="invite-friend-list">${inviteFriendListHtml(invitableFriends, pendingByFriend)}</div>
-        </section>
-      ` : ""}
-
       <section class="card list-card">
-        <h2>${hasFriends ? "Or invite someone new" : "Invite your partner"}</h2>
-        ${hasFriends ? "" : `<p class="muted section-hint">Text them the link — they'll swipe with you on their phone.</p>`}
+        <h2>Share the game</h2>
         <div class="code-card compact-code">
           <p class="muted">Game code</p>
           <div class="entry-code">${esc(state.game.entry_code)}</div>
         </div>
-        <button class="btn btn-primary btn-big" id="text-invite">Text invite link</button>
-        <button class="btn btn-secondary" id="copy-invite-link">Copy invite link</button>
-        <p class="muted invite-disclaimer center-text">Your partner can also open WannaWatch and enter code <strong>${esc(state.game.entry_code)}</strong> to join.</p>
+        <div class="button-row">
+          <button class="btn btn-primary" id="text-invite">Text invite link</button>
+          <button class="btn btn-secondary" id="copy-invite-link">Copy link</button>
+          <button class="btn btn-ghost" id="copy-invite-code">Copy code</button>
+        </div>
+        <p class="muted invite-disclaimer center-text">Friends can also open WannaWatch and enter code <strong>${esc(state.game.entry_code)}</strong> to join.</p>
+      </section>
+
+      <section class="card list-card">
+        <h2>Your friends</h2>
+        <p class="muted section-hint">Tap to add someone you've played with before.</p>
+        <div class="friend-list-scroll" id="invite-friend-list">${inviteFriendListHtml(pendingByFriend)}</div>
       </section>
 
       ${pendingInvites.length > 0 ? `
         <section class="card list-card waiting-card">
-          <h2>Waiting for your partner</h2>
-          <p class="muted">We'll start swiping as soon as they join.</p>
-          <div class="waiting-pulse"><div class="spinner"></div></div>
+          <h2>Pending invites</h2>
           ${pendingInvites.map((invite) => `
             <div class="friend-row">
               <div class="friend-info">
-                <strong>${esc(invite.invitee?.username || "Partner")}</strong>
-                <span class="muted">Invite sent</span>
+                <strong>${esc(invite.invitee?.username || "Friend")}</strong>
+                <span class="muted">Waiting to join…</span>
               </div>
               <button class="btn btn-ghost btn-small" data-nudge="${invite.id}">Nudge</button>
             </div>
@@ -1919,46 +2038,44 @@ function renderInvitePartnerScreen() {
       ` : ""}
 
       <section class="card list-card">
-        <h2>In this game</h2>
+        <h2>In this game <span class="muted">(${playerCount()})</span></h2>
         <div id="player-list">${playerListHtml()}</div>
       </section>
+
+      <button class="btn btn-primary btn-big" id="begin-game" ${hasPartner() ? "" : "disabled"}>
+        ${hasPartner() ? "Start swiping" : "Add a friend to start"}
+      </button>
+      <p class="muted center-text invite-start-hint">${hasPartner()
+        ? `${playerCount() - 1} friend${playerCount() === 2 ? "" : "s"} ready — tap Start when everyone's in.`
+        : "Invite at least one friend, then tap Start."}</p>
 
       <button class="link" id="leave-game">Cancel</button>
     </div>`;
 
   bindBrandHome();
+  bindInvitePartnerEvents();
+}
 
-  document.getElementById("text-invite").addEventListener("click", textInvitePartner);
-  document.getElementById("copy-invite-link").addEventListener("click", async () => {
-    await navigator.clipboard.writeText(shareLink());
-    toast("Invite link copied!");
-  });
+function renderWaitingToStartScreen() {
+  const host = state.game.players?.find((p) => p.user?.id === state.game.user_id)?.user;
+
+  app.innerHTML = `
+    ${topBarHtml(`<span class="muted">Waiting to start</span>`)}
+    <div class="screen center">
+      <div class="spinner"></div>
+      <h1 class="headline-sm">You're in!</h1>
+      <p class="muted">Waiting for ${esc(host?.username || "the host")} to start the game.</p>
+
+      <section class="card list-card full-width">
+        <h2>Players</h2>
+        <div id="player-list">${playerListHtml()}</div>
+      </section>
+
+      <button class="link" id="leave-game">Leave game</button>
+    </div>`;
+
+  bindBrandHome();
   document.getElementById("leave-game").addEventListener("click", leaveGame);
-
-  document.querySelectorAll("[data-invite-friend]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      const invite = await inviteFriendToGame(Number(btn.dataset.inviteFriend), state.game.id);
-      if (!invite) btn.disabled = false;
-      else {
-        lastRenderKey = null;
-        render();
-      }
-    });
-  });
-
-  document.querySelectorAll("[data-nudge]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      try {
-        await backend.nudgeGameInvite(Number(btn.dataset.nudge), state.user.id);
-        toast("Nudge sent.");
-      } catch (error) {
-        toast(error.serverMessage || "Couldn't send nudge.");
-        btn.disabled = false;
-      }
-    });
-  });
 }
 
 function renderLobbyScreen() {

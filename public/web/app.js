@@ -18,6 +18,7 @@ const state = {
   finalMatchKey: null,
   libraryTab: "matches", // matches | likes | friends
   libraryFriendId: null,
+  inviteGateCleared: false, // true only after host taps Start (or joiner sees game begin)
 };
 
 let cable = null;
@@ -437,16 +438,12 @@ function hasPartner() {
 }
 
 function isHost() {
-  return state.game?.user_id === state.user?.id;
-}
-
-function gameHasBegun() {
-  return Boolean(state.game?.started_at);
+  return Number(state.game?.user_id) === Number(state.user?.id);
 }
 
 function shouldShowInviteScreen() {
   if (!state.game || state.game.finished_at) return false;
-  return !gameHasBegun();
+  return !state.inviteGateCleared;
 }
 
 function matchedIdsOf(game) {
@@ -465,7 +462,10 @@ function applyGameUpdate(game) {
   if (!hadPartner && nowHasPartner) {
     toast(isHost() ? "Your partner joined — tap Start when you're ready!" : "Your partner joined!");
   }
-  if (!hadBegun && game.started_at) {
+  if (!isHost() && game.started_at) {
+    state.inviteGateCleared = true;
+  }
+  if (!hadBegun && game.started_at && state.inviteGateCleared) {
     if (!isClassic()) fetchMovies();
   }
 
@@ -533,6 +533,8 @@ async function startGame(game) {
   state.finishedSent = false;
   state.lastSwipe = null;
   state.finalMatchKey = null;
+  const hosting = Number(game.user_id) === Number(state.user?.id);
+  state.inviteGateCleared = Boolean(game.started_at) && !hosting;
   connectCable();
   cable.subscribe(gameChannelParams());
   render();
@@ -543,13 +545,14 @@ async function startGame(game) {
     toast("Could not join the game. Check your connection.");
   }
   render();
-  if (currentPlayer()?.ready_at) fetchMovies();
+  if (state.inviteGateCleared && (currentPlayer()?.ready_at || !isClassic())) fetchMovies();
 }
 
 function leaveGame() {
   if (state.game) cable.unsubscribe(gameChannelParams());
   state.game = null;
   state.movies = [];
+  state.inviteGateCleared = false;
   state.view = "home";
   cable.subscribe({ channel: "UserGamesChannel" });
   render();
@@ -879,7 +882,7 @@ function renderKeyFor(screen) {
   }
   if (screen === "matchFound") return `matchFound-${state.game.id}`;
   if (screen === "lobby" || screen === "waiting" || screen === "invitePartner" || screen === "waitingToStart") {
-    return `${screen}-${state.game.id}-${playerCount()}-${outgoingInvitesForGame(state.game.id).length}-${gameHasBegun()}`;
+    return `${screen}-${state.game.id}-${playerCount()}-${outgoingInvitesForGame(state.game.id).length}-${state.inviteGateCleared}`;
   }
   if (screen === "results") return `results-${state.game.id}-${state.game.finished_at}`;
   return `${screen}-${Date.now()}`;
@@ -1975,11 +1978,13 @@ async function beginGameFromInvite() {
   const btn = document.getElementById("begin-game");
   if (btn) btn.disabled = true;
   try {
+    state.inviteGateCleared = true;
     applyGameUpdate(await backend.beginGame(state.game.id, state.user.id));
     if (!isClassic()) fetchMovies();
     lastRenderKey = null;
     render();
   } catch (error) {
+    state.inviteGateCleared = false;
     toast(error.serverMessage || "Could not start the game. Try again.");
     if (btn) btn.disabled = false;
   }

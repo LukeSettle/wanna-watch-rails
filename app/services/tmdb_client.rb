@@ -18,8 +18,13 @@ class TmdbClient
   end
 
   def self.discover(params = {}, media: "movie")
+    discover_page(params, media: media)["results"] || []
+  end
+
+  # Full response, including "total_pages".
+  def self.discover_page(params = {}, media: "movie")
     path = media.to_s == "tv" ? "/discover/tv" : "/discover/movie"
-    get(path, params)["results"] || []
+    get(path, params)
   end
 
   def self.recommendations(movie_id)

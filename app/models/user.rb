@@ -32,6 +32,7 @@ class User < ApplicationRecord
 
   has_many :players
   has_many :purchases, dependent: :destroy
+  has_many :movie_ratings, dependent: :destroy
   has_many :owned_games, class_name: "Game", foreign_key: "user_id"
   has_many :sent_invites, class_name: "GameInvite", foreign_key: "inviter_id", dependent: :destroy
   has_many :received_invites, class_name: "GameInvite", foreign_key: "invitee_id", dependent: :destroy

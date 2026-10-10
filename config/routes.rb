@@ -9,6 +9,7 @@ Rails.application.routes.draw do
 
   post 'users/upsert'
   get 'users/find_by_device_id'
+  get 'users/movie_ratings'
   get 'friends/index'
   get 'friends/movie_ids'
 
@@ -30,6 +31,7 @@ Rails.application.routes.draw do
       post :finish_matching
       post :swipe
       post :undo_swipe
+      post :watched
       get :deck
     end
   end

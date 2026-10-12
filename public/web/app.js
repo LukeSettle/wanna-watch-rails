@@ -1343,7 +1343,7 @@ function renderNameScreen() {
     <div class="screen center auth-screen">
       ${authBackHtml()}
       <img src="/logo.png" alt="WannaWatch" class="logo">
-      <p class="kicker">Walk-up ticket</p>
+      <p class="kicker">Just a name</p>
       <h1 class="headline-sm">Play as a guest</h1>
       <p class="muted">Jump right in with just a name. You can save an account later.</p>
       <form id="name-form" class="card form-card">
@@ -1385,7 +1385,7 @@ function renderLoginScreen() {
     <div class="screen center auth-screen">
       ${authBackHtml()}
       <img src="/logo.png" alt="WannaWatch" class="logo">
-      <p class="kicker">Members</p>
+      <p class="kicker">Hey again</p>
       <h1 class="headline-sm">Welcome back</h1>
       <form id="login-form" class="card form-card">
         <label for="login-email">Email</label>
@@ -1442,7 +1442,7 @@ function renderRegisterScreen() {
       ${isNewVisitor ? authBackHtml() : ""}
       ${isNewVisitor
         ? `<img src="/logo.png" alt="WannaWatch" class="logo">
-           <p class="kicker">Tonight's feature</p>
+           <p class="kicker">You two</p>
            <h1 class="headline">Pick tonight's movie <span class="accent">together</span></h1>
            <p class="muted">Swipe with your partner until you both like the same movie — first match wins.</p>`
         : `<h1 class="headline-sm">Save your account</h1>
@@ -1511,7 +1511,7 @@ function renderResetScreen() {
     <div class="screen center auth-screen">
       ${authBackHtml()}
       <img src="/logo.png" alt="WannaWatch" class="logo">
-      <p class="kicker">Members</p>
+      <p class="kicker">Hey again</p>
       <h1 class="headline-sm">Set a new password</h1>
       <form id="reset-form" class="card form-card">
         <label for="reset-password">New password <span class="muted">(8+ characters)</span></label>
@@ -1542,8 +1542,8 @@ function renderHomeScreen() {
     ${topBarHtml(`<button class="link" id="edit-name">${usernameWithFlair(state.user)}</button>`)}
     <div class="screen">
       <div class="hero">
-        <p class="kicker">Now showing</p>
-        <h1 class="headline">Movie night with your <span class="accent">partner</span></h1>
+        <p class="kicker">You + them</p>
+        <h1 class="headline">Movie night with your <span class="accent">person</span></h1>
         <p class="muted">Invite your spouse or friend, then start swiping. They can join later and get the same movies. First match wins — that's tonight's pick.</p>
       </div>
 
@@ -1805,18 +1805,20 @@ function renderFriendsList() {
   }
 
   container.innerHTML = state.friends.map((friend) => `
-    <div class="friend-row">
-      <span class="friend-avatar" aria-hidden="true">${esc(friendInitial(friend.username))}</span>
-      <div class="friend-info">
-        <strong>${esc(friend.username || "Player")}</strong>
-        ${friend.last_played_at ? `<span class="muted">Played ${esc(lastPlayedLabel(friend.last_played_at))}</span>` : ""}
+    <article class="friend-card">
+      <div class="friend-card-top">
+        <span class="friend-avatar" style="--avatar:${friendColor(friend.username)}" aria-hidden="true">${esc(friendInitial(friend.username))}</span>
+        <div class="friend-info">
+          <strong>${esc(friend.username || "Player")}</strong>
+          <span class="muted">${friend.last_played_at ? `Watched together ${esc(lastPlayedLabel(friend.last_played_at))}` : "Ready for a movie night"}</span>
+        </div>
+        <button class="friend-remove" data-remove-friend="${friend.id}" aria-label="Remove ${esc(friend.username || "friend")}" title="Remove friend">✕</button>
       </div>
       <div class="friend-actions">
         <button class="btn btn-ghost btn-small" data-friend-likes="${friend.id}">Likes</button>
         <button class="btn btn-secondary btn-small" data-play="${friend.id}">Movie night</button>
-        <button class="btn btn-ghost btn-small friend-remove" data-remove-friend="${friend.id}" aria-label="Remove ${esc(friend.username || "friend")}" title="Remove friend">✕</button>
       </div>
-    </div>`).join("");
+    </article>`).join("");
 
   container.querySelectorAll("[data-play]").forEach((btn) => {
     btn.addEventListener("click", async () => {
@@ -1837,6 +1839,14 @@ function renderFriendsList() {
 function friendInitial(name) {
   const clean = (name || "Friend").trim();
   return clean.slice(0, 1).toUpperCase();
+}
+
+function friendColor(name) {
+  const colors = ["#ff8ec4", "#8fd3ff", "#ffe14a", "#c9b6ff", "#7ef0c2", "#ffb07a"];
+  let n = 0;
+  const text = name || "A";
+  for (let i = 0; i < text.length; i++) n += text.charCodeAt(i) * (i + 3);
+  return colors[n % colors.length];
 }
 
 function lastPlayedLabel(timestamp) {
@@ -2025,13 +2035,13 @@ async function renderCreateScreen() {
 
   const fineTuneSection = isPlus()
     ? `<details class="card fine-tune">
-          <summary>Fine-tune the program <span class="muted">(optional)</span></summary>
+          <summary>Tweak the details <span class="muted">(optional)</span></summary>
           ${fineTuneFields}
         </details>`
     : `<section class="card fine-tune fine-tune-locked">
           <div class="fine-tune-lock">
             <div>
-              <strong>Fine-tune the program</strong>
+              <strong>Tweak the details</strong>
               <p class="muted">Genres, eras, runtime, and language — WannaWatch+.</p>
             </div>
             <button type="button" class="btn btn-secondary btn-small" id="unlock-fine-tune">Get WannaWatch+</button>
@@ -2042,11 +2052,11 @@ async function renderCreateScreen() {
   app.innerHTML = `
     ${topBarHtml("")}
     <div class="screen create-screen">
-      <p class="kicker">Tonight's bill</p>
-      <h1 class="headline-sm">Set the program</h1>
+      <p class="kicker">Make it yours</p>
+      <h1 class="headline-sm">What are we in the mood for?</h1>
       <p class="muted create-lede">${isPlus()
-        ? "Choose how you play and the mood of the night. The details underneath are optional."
-        : "Choose how you play and the mood of the night. WannaWatch+ opens the finer controls."}</p>
+        ? "Pick how you play and the vibe for tonight. Tweak the details if you want."
+        : "Pick how you play and the vibe for tonight. WannaWatch+ unlocks the extra knobs."}</p>
       <form id="create-form">
         <section class="card form-card">
           <label>Game mode</label>
@@ -2397,7 +2407,7 @@ function inviteFriendListHtml(pendingByFriend) {
     const inGame = (state.game.players || []).some((p) => p.user?.id === friend.id);
     return `
     <div class="friend-row">
-      <span class="friend-avatar" aria-hidden="true">${esc(friendInitial(friend.username))}</span>
+      <span class="friend-avatar" style="--avatar:${friendColor(friend.username)}" aria-hidden="true">${esc(friendInitial(friend.username))}</span>
       <div class="friend-info">
         <strong>${esc(friend.username || "Friend")}</strong>
         ${inGame
@@ -3809,8 +3819,8 @@ async function renderHistoryScreen() {
   app.innerHTML = `
     ${topBarHtml("")}
     <div class="screen library-screen">
-      <p class="kicker">${state.libraryTab === "friends" ? "Double feature" : "Your collection"}</p>
-      <h1 class="headline-sm">${state.libraryTab === "friends" ? "Liked with friends" : "Your movies"}</h1>
+      <p class="kicker">${state.libraryTab === "friends" ? "Watch together" : "Your pile"}</p>
+      <h1 class="headline-sm">${state.libraryTab === "friends" ? "Movies with someone" : "Your movies"}</h1>
       <p class="muted">${isPlus()
         ? "Likes and matches across every night — pick tonight’s film, or narrow a list with a friend."
         : `Free keeps your last ${LIBRARY_FREE_LIMIT} likes and matches. WannaWatch+ ($2.99/mo) unlocks the full history.`}</p>
@@ -4000,18 +4010,18 @@ async function renderLibraryFriends(container) {
 
   container.innerHTML = `
     <div class="friend-cinema">
-      <p class="kicker">Choose a seatmate</p>
+      <p class="kicker">Who's watching?</p>
       <div class="friend-picker" role="listbox" aria-label="Friends">
         ${state.friends.map((f) => `
           <button type="button" class="friend-pick ${friend?.id === f.id ? "selected" : ""}" data-friend-pick="${f.id}" role="option" aria-selected="${friend?.id === f.id ? "true" : "false"}">
-            <span class="friend-avatar" aria-hidden="true">${esc(friendInitial(f.username))}</span>
+            <span class="friend-avatar" style="--avatar:${friendColor(f.username)}" aria-hidden="true">${esc(friendInitial(f.username))}</span>
             <span class="friend-pick-name">${esc(f.username || "Player")}</span>
           </button>`).join("")}
       </div>
       <div id="friend-library-body">
         ${friend ? "" : `
           <div class="reel-empty">
-            <p class="kicker">Now showing</p>
+            <p class="kicker">Your people</p>
             <h2>Pick someone you've watched with</h2>
             <p class="muted">Shared likes and their side of the aisle will light up here.</p>
           </div>`}
@@ -4048,9 +4058,9 @@ async function renderLibraryFriends(container) {
 
   body.innerHTML = `
     <header class="reel-header">
-      <p class="kicker">Now showing</p>
-      <h2>A reel with ${esc(friend.username)}</h2>
-      <p class="muted">Titles from the nights you played together.</p>
+      <p class="kicker">Saved likes</p>
+      <h2>Movies with ${esc(friend.username)}</h2>
+      <p class="muted">Stuff you both swiped yes on, plus their other likes.</p>
     </header>
     <div class="ticket-row">
       <div class="ticket"><strong>${shared.length}</strong><span>In common</span></div>
@@ -4177,7 +4187,8 @@ async function fillLibraryGrid(grid, items) {
     const poster = posterUrl(movie.poster_path, "w342");
     const media = movie.media_type || mediaType || "movie";
     const providers = preferredFlatrateProviders(movie);
-    const watchLabel = providers[0] ? `Watch on ${providers[0].provider_name}` : "Watch tonight";
+    const watchLabel = "Watch";
+    const watchTitle = providers[0] ? `Watch on ${providers[0].provider_name}` : "Watch tonight";
     return `
       <article class="result-card actionable" data-id="${esc(item.key)}" data-media="${media}" data-with="${esc(item.withNames || "")}">
         <button type="button" class="result-card-main" data-open-match>
@@ -4192,7 +4203,7 @@ async function fillLibraryGrid(grid, items) {
             ? `<button type="button" class="btn btn-secondary btn-small" data-settle>Tonight</button>`
             : ""}
           ${watchTonightUrl(movie)
-            ? `<a class="btn btn-primary btn-small" href="${esc(watchTonightUrl(movie))}" target="_blank" rel="noopener noreferrer">${esc(watchLabel)}</a>`
+            ? `<a class="btn btn-primary btn-small" href="${esc(watchTonightUrl(movie))}" target="_blank" rel="noopener noreferrer" title="${esc(watchTitle)}">${esc(watchLabel)}</a>`
             : ""}
           <button type="button" class="btn btn-ghost btn-small" data-share-match>Share</button>
         </div>

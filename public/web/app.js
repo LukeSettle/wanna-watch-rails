@@ -3356,7 +3356,6 @@ function movieCardHtml(movie) {
   const rating = movie.vote_average ? movie.vote_average.toFixed(1) : "–";
   const poster = posterUrl(movie.poster_path);
   const media = movie.media_type || "movie";
-  const kind = media === "tv" ? "TV" : "";
   return `
     <div class="movie-card" data-id="${movie.id}" data-media="${media}">
       <div class="stamp stamp-like">LIKE</div>
@@ -3366,13 +3365,6 @@ function movieCardHtml(movie) {
         ${poster
           ? `<img class="poster" src="${poster}" alt="${esc(movie.title)}" draggable="false">`
           : `<div class="poster poster-missing">${esc(movie.title)}</div>`}
-      </div>
-      <div class="card-caption">
-        <div class="card-title-row">
-          <strong>${esc(movie.title)}</strong>
-          <span class="rating">★ ${rating}</span>
-        </div>
-        <span class="muted">${[year, kind].filter(Boolean).join(" · ")}</span>
       </div>
       <div class="card-details">
         <h3>${esc(movie.title)} <span class="muted">${year}</span></h3>

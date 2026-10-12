@@ -10,6 +10,7 @@ const state = {
   movies: [],
   serverMessages: [],
   currentGames: [],
+  gamesLoaded: false,
   friends: [],
   invites: [],
   noMoreMovies: false,
@@ -500,7 +501,8 @@ async function refreshGamesList() {
   } catch {
     state.currentGames = [];
   }
-  renderGamesList();
+  state.gamesLoaded = true;
+  renderFriendsList();
 }
 
 async function refreshFriendsAndInvites() {
@@ -622,7 +624,97 @@ async function inviteFriendToGame(friendId, gameId) {
   }
 }
 
-async function startGameWithFriend(friendId) {
+function friendIdOnInvite(invite) {
+  const me = Number(state.user?.id);
+  if (Number(invite.inviter?.id) === me) return Number(invite.invitee?.id);
+  if (Number(invite.invitee?.id) === me) return Number(invite.inviter?.id);
+  return null;
+}
+
+function gameRecency(game) {
+  return Date.parse(game.updated_at || game.created_at || "") || Number(game.id) || 0;
+}
+
+function newestGame(games) {
+  return games.reduce((best, game) => {
+    if (!best || gameRecency(game) >= gameRecency(best)) return game;
+    return best;
+  }, null);
+}
+
+// Unfinished games this friend is already in, or still invited to.
+function gamesWithFriend(friendId) {
+  const id = Number(friendId);
+  const found = new Map();
+
+  const add = (game) => {
+    if (!game?.id || game.finished_at) return;
+    const key = Number(game.id);
+    if (!found.has(key)) found.set(key, game);
+  };
+
+  (state.currentGames || []).forEach((game) => {
+    const inPlayers = (game.players || []).some((player) => Number(player.user?.id) === id);
+    const invited = (state.invites || []).some((invite) =>
+      invite.status === "pending" &&
+      Number(invite.game_id) === Number(game.id) &&
+      friendIdOnInvite(invite) === id
+    );
+    if (inPlayers || invited) add(game);
+  });
+
+  (state.invites || []).forEach((invite) => {
+    if (invite.status !== "pending" || friendIdOnInvite(invite) !== id) return;
+    add(invite.game);
+  });
+
+  return [...found.values()];
+}
+
+// Resume a game that still needs a match. Otherwise drop into endless swiping.
+function friendMatchAction(friendId) {
+  const games = gamesWithFriend(friendId);
+  const unmatched = games.filter((game) => matchedIdsOf(game).length === 0);
+  if (unmatched.length > 0) {
+    return { label: "Continue matching", game: newestGame(unmatched) };
+  }
+
+  const endless = games.filter((game) => game.mode === "endless");
+  if (endless.length > 0) {
+    return { label: "Continue matching", game: newestGame(endless) };
+  }
+
+  return { label: "Endless swipe", game: null };
+}
+
+function friendStatusText(friend, action) {
+  if (action.game && matchedIdsOf(action.game).length === 0) return "Match in progress";
+  if (action.game) return "Endless swipe in progress";
+  if (friend.last_played_at) return `Watched together ${lastPlayedLabel(friend.last_played_at)}`;
+  return "Ready to swipe together";
+}
+
+async function resumeFriendGame(game) {
+  const invite = incomingInvites().find((item) =>
+    Number(item.game_id) === Number(game.id) || item.entry_code === game.entry_code
+  );
+  if (invite) {
+    await acceptInvite(invite.id);
+    return;
+  }
+
+  let next = game;
+  if (!game.started_at && Number(game.user_id) === Number(state.user?.id)) {
+    try {
+      next = await backend.beginGame(game.id, state.user.id);
+    } catch {
+      // Open the game anyway so the host can start from the invite screen.
+    }
+  }
+  startGame(next);
+}
+
+async function startEndlessWithFriend(friendId) {
   try {
     const query = buildDiscoverQuery(defaultGameValues());
     const game = await backend.upsertGame({
@@ -630,13 +722,23 @@ async function startGameWithFriend(friendId) {
       query: JSON.stringify(query),
       user_id: state.user.id,
       providers: state.user.providers || [],
-      mode: "first_match",
+      mode: "endless",
     });
-    await inviteFriendToGame(friendId, game.id);
-    startGame(game);
+    const invite = await inviteFriendToGame(friendId, game.id);
+    if (!invite) return;
+    startGame(await backend.beginGame(game.id, state.user.id));
   } catch {
-    toast("Couldn't start a game with that friend.");
+    toast("Couldn't start swiping with that friend.");
   }
+}
+
+async function playWithFriend(friendId) {
+  const action = friendMatchAction(friendId);
+  if (action.game) {
+    await resumeFriendGame(action.game);
+    return;
+  }
+  await startEndlessWithFriend(friendId);
 }
 
 // ---------- socket ----------
@@ -1583,11 +1685,6 @@ function renderHomeScreen() {
         <div id="home-library-preview"><p class="muted">Loading…</p></div>
       </section>
 
-      <section class="card list-card">
-        <h2>Your games</h2>
-        <div id="games-list"><p class="muted">Loading…</p></div>
-      </section>
-
       ${state.user.email
         ? `<section class="card form-card settings-card" id="notification-settings">
              <h2>Notifications</h2>
@@ -1663,7 +1760,6 @@ function renderHomeScreen() {
     if (confirm("Log out on this device?")) logout();
   });
 
-  renderGamesList();
   renderFriendsList();
   renderIncomingInvites();
   renderHomeLibraryPreview();
@@ -1799,31 +1895,40 @@ function renderFriendsList() {
   const container = document.getElementById("friends-list");
   if (!container) return;
 
+  if (!state.gamesLoaded) {
+    container.innerHTML = `<p class="muted">Loading…</p>`;
+    return;
+  }
+
   if (state.friends.length === 0) {
     container.innerHTML = `<p class="muted">After your first movie night together, partners show up here for one-tap invites.</p>`;
     return;
   }
 
-  container.innerHTML = state.friends.map((friend) => `
+  container.innerHTML = state.friends.map((friend) => {
+    const action = friendMatchAction(friend.id);
+    return `
     <article class="friend-card">
       <div class="friend-card-top">
         <span class="friend-avatar" style="--avatar:${friendColor(friend.username)}" aria-hidden="true">${esc(friendInitial(friend.username))}</span>
         <div class="friend-info">
           <strong>${esc(friend.username || "Player")}</strong>
-          <span class="muted">${friend.last_played_at ? `Watched together ${esc(lastPlayedLabel(friend.last_played_at))}` : "Ready for a movie night"}</span>
+          <span class="muted">${esc(friendStatusText(friend, action))}</span>
         </div>
         <button class="friend-remove" data-remove-friend="${friend.id}" aria-label="Remove ${esc(friend.username || "friend")}" title="Remove friend">✕</button>
       </div>
       <div class="friend-actions">
         <button class="btn btn-ghost btn-small" data-friend-likes="${friend.id}">Likes</button>
-        <button class="btn btn-secondary btn-small" data-play="${friend.id}">Movie night</button>
+        <button class="btn btn-secondary btn-small" data-play="${friend.id}">${esc(action.label)}</button>
       </div>
-    </article>`).join("");
+    </article>`;
+  }).join("");
 
   container.querySelectorAll("[data-play]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       btn.disabled = true;
-      await startGameWithFriend(Number(btn.dataset.play));
+      await playWithFriend(Number(btn.dataset.play));
+      if (btn.isConnected && !state.game) btn.disabled = false;
     });
   });
 
@@ -1873,66 +1978,6 @@ async function removeFriend(friendId) {
   } catch {
     toast("Couldn't remove that friend.");
   }
-}
-
-function renderGamesList() {
-  const container = document.getElementById("games-list");
-  if (!container) return;
-
-  if (state.currentGames.length === 0) {
-    container.innerHTML = `<p class="muted">No games yet. Create one and invite a friend!</p>`;
-    return;
-  }
-
-  container.innerHTML = state.currentGames.map((game) => {
-    const players = game.players.map((p) => esc(p.user?.username)).filter(Boolean).join(", ");
-    const modeTag = game.mode === "endless"
-      ? `<span class="endless-tag">Endless</span>`
-      : game.mode === "first_match"
-        ? `<span class="endless-tag">First match</span>`
-        : "";
-
-    return `
-    <div class="game-row">
-      <button class="game-row-main" data-code="${esc(game.entry_code)}">
-        <span class="game-row-info">
-          <span class="game-row-heading">
-            <span class="game-code">${esc(game.entry_code)}</span>
-            ${modeTag}
-          </span>
-          ${players ? `<span class="game-players">${players}</span>` : ""}
-        </span>
-        <span class="game-resume"><span class="game-resume-label">Resume </span><span aria-hidden="true">→</span></span>
-      </button>
-      <button class="game-remove" data-id="${game.id}" data-code="${esc(game.entry_code)}" aria-label="Remove from game" title="Remove from game">
-        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-          <path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v9h-2V9zm4 0h2v9h-2V9zM7 9h2v9H7V9zm-1 12h12l1-12H5l1 12z"/>
-        </svg>
-      </button>
-    </div>`;
-  }).join("");
-
-  container.querySelectorAll(".game-row-main").forEach((row) => {
-    row.addEventListener("click", () => joinGameByCode(row.dataset.code));
-  });
-
-  container.querySelectorAll(".game-remove").forEach((btn) => {
-    btn.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      const code = btn.dataset.code;
-      if (!confirm(`Remove yourself from game ${code}?`)) return;
-
-      btn.disabled = true;
-      try {
-        await backend.leaveGame(Number(btn.dataset.id), state.user.id);
-        if (state.game?.id === Number(btn.dataset.id)) leaveGame();
-        else await refreshGamesList();
-      } catch {
-        toast("Couldn't leave that game. Try again.");
-        btn.disabled = false;
-      }
-    });
-  });
 }
 
 // ---------- create game screen ----------

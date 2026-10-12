@@ -1202,6 +1202,10 @@ button.game-row {
   margin: 0;
 }
 
+.friend-likes-heading {
+  margin: 24px 0 4px;
+}
+
 .library-friend-label {
   display: block;
   margin-bottom: 6px;
@@ -1327,6 +1331,10 @@ button.game-row {
   font-size: 0.85rem;
   border-radius: 10px;
   white-space: nowrap;
+}
+
+.friend-actions .friend-remove {
+  padding: 8px 10px;
 }
 
 .invite-popup {

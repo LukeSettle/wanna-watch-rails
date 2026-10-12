@@ -1404,8 +1404,13 @@ function renderFriendsList() {
     <div class="friend-row">
       <div class="friend-info">
         <strong>${esc(friend.username || "Player")}</strong>
+        ${friend.last_played_at ? `<span class="muted">Played ${esc(lastPlayedLabel(friend.last_played_at))}</span>` : ""}
       </div>
-      <button class="btn btn-secondary btn-small" data-play="${friend.id}">Movie night</button>
+      <div class="friend-actions">
+        <button class="btn btn-ghost btn-small" data-friend-likes="${friend.id}">Likes</button>
+        <button class="btn btn-secondary btn-small" data-play="${friend.id}">Movie night</button>
+        <button class="btn btn-ghost btn-small friend-remove" data-remove-friend="${friend.id}" aria-label="Remove ${esc(friend.username || "friend")}" title="Remove friend">✕</button>
+      </div>
     </div>`).join("");
 
   container.querySelectorAll("[data-play]").forEach((btn) => {
@@ -1414,6 +1419,43 @@ function renderFriendsList() {
       await startGameWithFriend(Number(btn.dataset.play));
     });
   });
+
+  container.querySelectorAll("[data-friend-likes]").forEach((btn) => {
+    btn.addEventListener("click", () => openFriendLikes(Number(btn.dataset.friendLikes)));
+  });
+
+  container.querySelectorAll("[data-remove-friend]").forEach((btn) => {
+    btn.addEventListener("click", () => removeFriend(Number(btn.dataset.removeFriend)));
+  });
+}
+
+function lastPlayedLabel(timestamp) {
+  const days = Math.floor((Date.now() - Date.parse(timestamp)) / 86400000);
+  if (days < 1) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 30) return `${days} days ago`;
+  return new Date(timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+function openFriendLikes(friendId) {
+  state.libraryTab = "friends";
+  state.libraryFriendId = friendId;
+  state.view = "history";
+  render();
+}
+
+async function removeFriend(friendId) {
+  const friend = state.friends.find((f) => f.id === friendId);
+  if (!confirm(`Remove ${friend?.username || "this friend"} from your friends? They'll come back if you play together again.`)) return;
+
+  try {
+    await backend.removeFriend(state.user.id, friendId);
+    state.friends = state.friends.filter((f) => f.id !== friendId);
+    renderFriendsList();
+    toast(`Removed ${friend?.username || "friend"}.`);
+  } catch {
+    toast("Couldn't remove that friend.");
+  }
 }
 
 function renderGamesList() {
@@ -3511,11 +3553,16 @@ async function renderLibraryFriends(container) {
          <p class="hint">Starts a first-match game using only the movies you’ve both already liked.</p>`
       : shared.length === 1
         ? `<button type="button" class="btn btn-primary" id="settle-shared-one">That’s the one — settle</button>`
-        : `<p class="muted">No shared likes yet. Play a game with ${esc(friend.username)} first.</p>`}
+        : `<p class="muted">No shared likes yet.${theirs.length ? "" : ` Play a game with ${esc(friend.username)} first.`}</p>`}
     ${shared.length > 1
       ? `<button type="button" class="btn btn-ghost btn-small" id="settle-random-shared">Pick one for us</button>`
       : ""}
-    <div id="library-grid" class="results-grid"></div>`;
+    <div id="library-grid" class="results-grid"></div>
+    ${theirs.length
+      ? `<h2 class="friend-likes-heading">${esc(friend.username)}’s likes</h2>
+         <p class="muted">Everything ${esc(friend.username)} liked in games you played together.</p>
+         <div id="friend-likes-grid" class="results-grid"></div>`
+      : ""}`;
 
   document.getElementById("sift-with-friend")?.addEventListener("click", async (event) => {
     event.target.disabled = true;
@@ -3534,13 +3581,21 @@ async function renderLibraryFriends(container) {
     settleOnTitle(key, await fetchMovieSummary(id, mediaType), friend.username);
   });
 
-  if (shared.length === 0) return;
-
   await fillLibraryGrid(
     document.getElementById("library-grid"),
     shared.slice(0, 40).map((key) => ({
       key,
       subtitle: `You & ${friend.username} both liked this`,
+      withNames: friend.username,
+      showSettle: true,
+    }))
+  );
+
+  await fillLibraryGrid(
+    document.getElementById("friend-likes-grid"),
+    theirs.slice(0, 40).map((key) => ({
+      key,
+      subtitle: shared.includes(key) ? "You both liked this" : `Liked by ${friend.username}`,
       withNames: friend.username,
       showSettle: true,
     }))

@@ -160,7 +160,7 @@ async function boot() {
       connectCable();
       cable?.subscribe({ channel: "UserGamesChannel" });
     } else {
-      state.view = "name";
+      state.view = "register";
     }
     render();
     return;
@@ -169,7 +169,7 @@ async function boot() {
   if (state.user?.username) {
     await enterHome();
   } else {
-    state.view = "name";
+    state.view = "register";
     render();
   }
 }
@@ -820,7 +820,7 @@ async function undoLastSwipe() {
 
 function screenName() {
   if (state.view === "login" || state.view === "reset" || state.view === "shop") return state.view;
-  if (!state.user?.username) return "name";
+  if (!state.user?.username) return state.view === "name" ? "name" : "register";
   if (!state.game) return state.view;
   if (shouldShowInviteScreen()) {
     return isHost() ? "invitePartner" : "waitingToStart";
@@ -943,15 +943,21 @@ function renderNameScreen() {
   app.innerHTML = `
     <div class="screen center">
       <img src="/logo.png" alt="WannaWatch" class="logo">
-      <h1 class="headline">Pick tonight's movie <span class="accent">together</span></h1>
-      <p class="muted">Swipe with your partner until you both like the same movie — first match wins.</p>
+      <h1 class="headline-sm">Play as a guest</h1>
+      <p class="muted">Jump right in with just a name. You can save an account later.</p>
       <form id="name-form" class="card form-card">
         <label for="username">What should we call you?</label>
         <input id="username" name="username" maxlength="30" placeholder="Enter your name" required autocomplete="nickname">
         <button type="submit" class="btn btn-primary">Let's go</button>
       </form>
+      <button class="link" id="go-register">Create an account instead</button>
       <button class="link" id="go-login">Already have an account? Log in</button>
     </div>`;
+
+  document.getElementById("go-register").addEventListener("click", () => {
+    state.view = "register";
+    render();
+  });
 
   document.getElementById("name-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -986,7 +992,7 @@ function renderLoginScreen() {
         <button type="submit" class="btn btn-primary">Log in</button>
       </form>
       <button class="link" id="forgot-password">Forgot password?</button>
-      <button class="link" id="back-to-name">Just play as a guest instead</button>
+      <button class="link" id="back-to-name">${state.user?.username ? "Back to home" : "New here? Create an account"}</button>
     </div>`;
 
   document.getElementById("login-form").addEventListener("submit", async (event) => {
@@ -1016,50 +1022,82 @@ function renderLoginScreen() {
   });
 
   document.getElementById("back-to-name").addEventListener("click", () => {
-    state.view = state.user?.username ? "home" : "name";
+    state.view = state.user?.username ? "home" : "register";
     render();
   });
 }
 
+// New visitors land here by default; guests reach it to save their account.
 function renderRegisterScreen() {
+  const isNewVisitor = !state.user?.username;
+
   app.innerHTML = `
-    ${topBarHtml("")}
+    ${isNewVisitor ? "" : topBarHtml("")}
     <div class="screen center">
-      <h1 class="headline-sm">Save your account</h1>
-      <p class="muted">Keep your games and matches, and log in from any device.</p>
+      ${isNewVisitor
+        ? `<img src="/logo.png" alt="WannaWatch" class="logo">
+           <h1 class="headline">Pick tonight's movie <span class="accent">together</span></h1>
+           <p class="muted">Swipe with your partner until you both like the same movie — first match wins.</p>`
+        : `<h1 class="headline-sm">Save your account</h1>
+           <p class="muted">Keep your games and matches, and log in from any device.</p>`}
       <form id="register-form" class="card form-card">
+        ${isNewVisitor
+          ? `<label for="register-username">Name</label>
+             <input id="register-username" maxlength="30" placeholder="Enter your name" required autocomplete="nickname">`
+          : ""}
+        <label for="register-phone">Phone <span class="muted">(for invites and match texts)</span></label>
+        <input id="register-phone" type="tel" placeholder="+1 555 123 4567" required autocomplete="tel">
         <label for="register-email">Email</label>
         <input id="register-email" type="email" placeholder="you@example.com" required autocomplete="email">
-        <label for="register-phone">Phone <span class="muted">(optional, for SMS alerts)</span></label>
-        <input id="register-phone" type="tel" placeholder="+1 555 123 4567" autocomplete="tel">
         <label for="register-password">Password <span class="muted">(8+ characters)</span></label>
         <input id="register-password" type="password" placeholder="••••••••" required minlength="8" autocomplete="new-password">
-        <button type="submit" class="btn btn-primary">Create login</button>
+        <button type="submit" class="btn btn-primary">${isNewVisitor ? "Sign up" : "Create login"}</button>
       </form>
-      <button class="link" id="back-home">Back to home</button>
+      ${isNewVisitor
+        ? `<button class="link" id="play-as-guest">Just play as a guest</button>
+           <button class="link" id="go-login">Already have an account? Log in</button>`
+        : `<button class="link" id="back-home">Back to home</button>`}
     </div>`;
 
-  bindBrandHome();
+  if (!isNewVisitor) bindBrandHome();
+
   document.getElementById("register-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
       adoptUser(await backend.register({
         user_id: state.user?.id,
-        username: state.user?.username,
+        username: state.user?.username || document.getElementById("register-username").value.trim(),
         email: document.getElementById("register-email").value,
-        phone: document.getElementById("register-phone").value.trim() || undefined,
+        phone: document.getElementById("register-phone").value.trim(),
         password: document.getElementById("register-password").value,
       }));
+    } catch (error) {
+      toast(error.serverMessage || "Could not create the account.");
+      return;
+    }
+
+    if (isNewVisitor) {
+      toast(`Welcome, ${state.user.username}!`);
+      await enterHome();
+    } else {
       toast("Account saved — you can log in anywhere now!");
       state.view = "home";
       lastRenderKey = null;
       render();
-    } catch (error) {
-      toast(error.serverMessage || "Could not create the account.");
     }
   });
 
-  document.getElementById("back-home").addEventListener("click", () => {
+  document.getElementById("play-as-guest")?.addEventListener("click", () => {
+    state.view = "name";
+    render();
+  });
+
+  document.getElementById("go-login")?.addEventListener("click", () => {
+    state.view = "login";
+    render();
+  });
+
+  document.getElementById("back-home")?.addEventListener("click", () => {
     state.view = "home";
     render();
   });

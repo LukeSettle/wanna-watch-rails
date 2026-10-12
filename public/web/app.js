@@ -25,6 +25,7 @@ const state = {
 
 let cable = null;
 let lastRenderKey = null;
+let mediaGlassRoot = null;
 let ignoreClicksUntil = 0;
 let suppressPopstate = false;
 
@@ -1340,6 +1341,10 @@ function render() {
   }
   lastRenderKey = key;
   if (!history.state?.wwModal) dismissModal();
+  if (screen !== "create" && mediaGlassRoot) {
+    mediaGlassRoot.unmount();
+    mediaGlassRoot = null;
+  }
 
   const renderers = {
     name: renderNameScreen,
@@ -1985,6 +1990,8 @@ async function removeFriend(friendId) {
 let genresCache = null;
 
 async function renderCreateScreen() {
+  mediaGlassRoot?.unmount();
+  mediaGlassRoot = null;
   const currentYear = new Date().getFullYear();
   const eraPresets = [
     { label: "Any time", from: 1950, to: currentYear, any: true },
@@ -2140,24 +2147,7 @@ async function renderCreateScreen() {
 
           <div class="field-block">
             <label id="media-label">Movies or TV?</label>
-            <div class="media-venn" id="media-venn" data-value="movie">
-              <div class="media-venn-stage" id="media-venn-stage">
-                <div class="media-venn-circle media-venn-movies"></div>
-                <div class="media-venn-circle media-venn-tv"></div>
-                <div class="media-venn-lens" id="media-venn-lens" hidden></div>
-                <span class="media-venn-label media-venn-label-movies">Movies</span>
-                <span class="media-venn-label media-venn-label-tv is-dim">TV</span>
-              </div>
-              <div class="media-slider">
-                <input type="range" id="media-slider" min="0" max="2" step="1" value="0" aria-labelledby="media-label" aria-valuetext="Movies">
-                <div class="media-slider-stops" aria-hidden="true">
-                  <span>Movies</span>
-                  <span>Both</span>
-                  <span>TV</span>
-                </div>
-              </div>
-              <p class="hint media-venn-caption" id="media-caption">Just movies</p>
-            </div>
+            <div id="media-glass"></div>
           </div>
 
           <div class="field-block">
@@ -2266,12 +2256,10 @@ async function renderCreateScreen() {
   favorPopularChip?.addEventListener("click", () => favorPopularChip.classList.toggle("selected"));
   includeKidsChip?.addEventListener("click", () => includeKidsChip.classList.toggle("selected"));
 
-  const mediaValues = ["movie", "both", "tv"];
-  const mediaCaptions = ["Just movies", "Movies and TV", "Just TV"];
-  const mediaAria = ["Movies", "Movies and TV", "TV shows"];
+  let mediaType = "both";
 
   function selectedMediaType() {
-    return document.getElementById("media-venn")?.dataset.value || "movie";
+    return mediaType;
   }
 
   const syncRuntimeVisibility = () => {
@@ -2279,134 +2267,24 @@ async function renderCreateScreen() {
     if (block) block.hidden = selectedMediaType() === "tv";
   };
 
-  function bindMediaVenn() {
-    const root = document.getElementById("media-venn");
-    const stage = document.getElementById("media-venn-stage");
-    const lens = document.getElementById("media-venn-lens");
-    const slider = document.getElementById("media-slider");
-    const caption = document.getElementById("media-caption");
-    const moviesEl = stage?.querySelector(".media-venn-movies");
-    const tvEl = stage?.querySelector(".media-venn-tv");
-    const moviesLabel = stage?.querySelector(".media-venn-label-movies");
-    const tvLabel = stage?.querySelector(".media-venn-label-tv");
-    if (!root || !stage || !lens || !slider || !moviesEl || !tvEl) return;
-
-    const measure = (el, pad) => {
-      const stageRect = stage.getBoundingClientRect();
-      const rect = el.getBoundingClientRect();
-      const scale = stage.offsetWidth ? stageRect.width / stage.offsetWidth : 1;
-      return {
-        left: (rect.left - stageRect.left) / scale - pad,
-        top: (rect.top - stageRect.top) / scale - pad,
-        width: rect.width / scale + pad * 2,
-        height: rect.height / scale + pad * 2,
-      };
+  function mountMediaGlass() {
+    const mountEl = document.getElementById("media-glass");
+    if (!mountEl || !window.ReactDOM || !window.MediaGlassSelect) return;
+    mediaGlassRoot = ReactDOM.createRoot(mountEl);
+    const draw = () => {
+      mediaGlassRoot.render(React.createElement(MediaGlassSelect, {
+        value: mediaType,
+        labelledBy: "media-label",
+        onChange(next) {
+          if (next === mediaType) return;
+          mediaType = next;
+          draw();
+          syncRuntimeVisibility();
+          loadGenresForMedia();
+        },
+      }));
     };
-
-    const lerp = (a, b, t) => a + (b - a) * t;
-    const lerpBox = (a, b, t) => ({
-      left: lerp(a.left, b.left, t),
-      top: lerp(a.top, b.top, t),
-      width: lerp(a.width, b.width, t),
-      height: lerp(a.height, b.height, t),
-    });
-
-    // The highlight starts on the movies circle, widens across both, then settles on TV.
-    const positionLens = (t) => {
-      const pad = 5;
-      const movieBox = measure(moviesEl, pad);
-      const tvBox = measure(tvEl, pad);
-      if (!movieBox.width || !tvBox.width) return;
-      const bothBox = {
-        left: Math.min(movieBox.left, tvBox.left),
-        top: Math.min(movieBox.top, tvBox.top),
-        width: Math.max(movieBox.left + movieBox.width, tvBox.left + tvBox.width) - Math.min(movieBox.left, tvBox.left),
-        height: Math.max(movieBox.top + movieBox.height, tvBox.top + tvBox.height) - Math.min(movieBox.top, tvBox.top),
-      };
-      const clamped = Math.max(0, Math.min(2, t));
-      const box = clamped <= 1 ? lerpBox(movieBox, bothBox, clamped) : lerpBox(bothBox, tvBox, clamped - 1);
-      lens.hidden = false;
-      lens.style.left = `${box.left}px`;
-      lens.style.top = `${box.top}px`;
-      lens.style.width = `${box.width}px`;
-      lens.style.height = `${box.height}px`;
-    };
-
-    const paintLabels = (index) => {
-      moviesLabel?.classList.toggle("is-dim", index === 2);
-      tvLabel?.classList.toggle("is-dim", index === 0);
-    };
-
-    const commitMedia = (index) => {
-      const nextIndex = Math.max(0, Math.min(2, index));
-      const next = mediaValues[nextIndex];
-      const changed = root.dataset.value !== next;
-      root.dataset.value = next;
-      slider.value = String(nextIndex);
-      slider.setAttribute("aria-valuetext", mediaAria[nextIndex]);
-      if (caption) caption.textContent = mediaCaptions[nextIndex];
-      paintLabels(nextIndex);
-      const wasDragging = stage.classList.contains("is-dragging");
-      stage.classList.remove("is-dragging");
-      if (wasDragging) requestAnimationFrame(() => positionLens(nextIndex));
-      else positionLens(nextIndex);
-      if (!changed) return;
-      syncRuntimeVisibility();
-      loadGenresForMedia();
-    };
-
-    const indexFromClientX = (clientX) => {
-      const movies = moviesEl.getBoundingClientRect();
-      const tv = tvEl.getBoundingClientRect();
-      const inMovies = clientX >= movies.left && clientX <= movies.right;
-      const inTv = clientX >= tv.left && clientX <= tv.right;
-      if (inMovies && inTv) return 1;
-      if (inMovies) return 0;
-      if (inTv) return 2;
-      const rect = stage.getBoundingClientRect();
-      const t = rect.width ? ((clientX - rect.left) / rect.width) * 2 : 0;
-      if (t < 0.75) return 0;
-      if (t > 1.25) return 2;
-      return 1;
-    };
-
-    const tFromClientX = (clientX) => {
-      const rect = stage.getBoundingClientRect();
-      if (!rect.width) return 0;
-      const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-      return ratio * 2;
-    };
-
-    let dragging = false;
-    stage.addEventListener("pointerdown", (event) => {
-      if (event.button != null && event.button !== 0) return;
-      dragging = true;
-      stage.classList.add("is-dragging");
-      stage.setPointerCapture(event.pointerId);
-      const t = tFromClientX(event.clientX);
-      positionLens(t);
-      paintLabels(Math.round(t));
-    });
-    stage.addEventListener("pointermove", (event) => {
-      if (!dragging) return;
-      const t = tFromClientX(event.clientX);
-      positionLens(t);
-      paintLabels(Math.round(t));
-    });
-    const endDrag = (event) => {
-      if (!dragging) return;
-      dragging = false;
-      commitMedia(indexFromClientX(event.clientX));
-    };
-    stage.addEventListener("pointerup", endDrag);
-    stage.addEventListener("pointercancel", endDrag);
-
-    slider.addEventListener("input", () => {
-      commitMedia(Number(slider.value));
-    });
-
-    commitMedia(Number(slider.value) || 0);
-    requestAnimationFrame(() => positionLens(Number(root.dataset.value === "tv" ? 2 : root.dataset.value === "both" ? 1 : 0)));
+    draw();
   }
 
   const savedProviderIds = new Set(normalizeProviderIds(state.user.providers || []));
@@ -2469,7 +2347,7 @@ async function renderCreateScreen() {
     const eras = [...document.querySelectorAll("#era-chips .chip.selected")];
     const rating = document.querySelector("#rating-chips .chip.selected");
     const runtime = document.querySelector("#runtime-chips .chip.selected");
-    const mediaType = document.getElementById("media-venn")?.dataset.value || "movie";
+    const mediaType = selectedMediaType();
 
     const releaseYearRanges = eras.map((era) => [
       Number(era.dataset.from || 1950),
@@ -2505,7 +2383,7 @@ async function renderCreateScreen() {
   let genresCacheTv = null;
 
   async function loadGenresForMedia() {
-    const media = document.getElementById("media-venn")?.dataset.value || "movie";
+    const media = selectedMediaType();
     const chipContainer = document.getElementById("genre-chips");
     if (!chipContainer) return;
 
@@ -2552,7 +2430,7 @@ async function renderCreateScreen() {
     }
   }
 
-  bindMediaVenn();
+  mountMediaGlass();
   syncRuntimeVisibility();
   loadGenresForMedia();
 }

@@ -274,7 +274,8 @@ function renderShopScreen() {
 
   bindBrandHome();
   document.getElementById("shop-back").addEventListener("click", () => {
-    state.view = state.game ? "match" : "home";
+    if (state.game) state.view = "match";
+    else restoreViewFromRoute();
     lastRenderKey = null;
     render();
   });

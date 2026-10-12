@@ -19,7 +19,10 @@ html, body {
   margin: 0;
   padding: 0;
   min-height: 100%;
-  overscroll-behavior: none;
+  /* Block pull-to-refresh, but leave horizontal overscroll so the
+     browser's edge-swipe back gesture still works. */
+  overscroll-behavior-x: auto;
+  overscroll-behavior-y: none;
 }
 
 /* While swiping, the page itself must never scroll, bounce, or pull-to-refresh. */

@@ -269,11 +269,90 @@ class DeckBuilderTest < ActiveSupport::TestCase
     end
   end
 
+  test "deck keeps filling from deeper catalog pages when the usual pools are used up" do
+    @game.update!(query: { params: { "vote_average.gte" => 0 } }.to_json)
+    seen = (1..40).map { |id| "movie:#{id}" }
+    players(:one).update!(seen_movie_ids: seen)
+    catalog = (1..1000).map { |id| movie(id) }
+
+    with_tmdb(
+      discover: ->(params, media: "movie") {
+        page = params["vote_count.gte"] == 50 ? params["page"].to_i : 1
+        catalog.slice((page - 1) * 20, 20)
+      },
+      discover_page: ->(params, media: "movie") {
+        { "results" => catalog.first(20), "total_pages" => 50 }
+      },
+      watch_providers: ->(*) { {} }
+    ) do
+      deck = DeckBuilder.new(@game).build
+      assert_equal DeckBuilder::DECK_SIZE, deck.size
+      assert (deck.map { |m| MediaKey.for(m) } & seen).empty?
+    end
+  end
+
+  test "recommendations seeded by every player's likes rank titles that fit the whole group first" do
+    other = users(:two)
+    Player.create!(user: other, game: @game)
+    @game.update!(query: { params: { "vote_average.gte" => 0, "ww_for_you" => "true" } }.to_json)
+
+    MovieRating.create!(user: @user, media_key: "movie:900", liked: true, genre_ids: [35])
+    MovieRating.create!(user: other, media_key: "movie:901", liked: true, genre_ids: [35])
+    MovieRating.create!(user: other, media_key: "movie:902", liked: false, watched: true, genre_ids: [27])
+
+    comedy = movie(500, genre_ids: [35])
+    horror = movie(501, genre_ids: [27])
+    shared_pick = movie(502, genre_ids: [35, 18])
+    seeds = []
+
+    with_tmdb(
+      discover: ->(*) { [] },
+      recommendations: ->(id) {
+        seeds << id
+        id == 900 ? [horror, comedy, shared_pick] : [shared_pick]
+      },
+      watch_providers: ->(*) { {} }
+    ) do
+      deck = DeckBuilder.new(@game).build
+      ids = deck.map { |m| m["id"] }
+      assert_equal [900, 901].sort, seeds.sort
+      assert_equal 502, ids.first
+      assert ids.index(500) < ids.index(501)
+    end
+  end
+
+  test "titles rated as already watched are never dealt" do
+    MovieRating.create!(user: @user, media_key: "movie:77", liked: true, watched: true)
+    @game.update!(query: { params: { "vote_average.gte" => 0 } }.to_json)
+
+    results = [movie(77), movie(78)]
+
+    with_tmdb(discover: ->(*) { results }, watch_providers: ->(*) { {} }) do
+      ids = DeckBuilder.new(@game).build.map { |m| m["id"] }
+      assert_not_includes ids, 77
+      assert_includes ids, 78
+    end
+  end
+
   private
 
-  def with_tmdb(discover:, watch_providers:, details: nil)
+  def movie(id, genre_ids: [28])
+    {
+      "id" => id,
+      "title" => "Title #{id}",
+      "poster_path" => "/p.jpg",
+      "adult" => false,
+      "release_date" => "2020-01-01",
+      "vote_average" => 7.0,
+      "vote_count" => 2000,
+      "genre_ids" => genre_ids,
+    }
+  end
+
+  def with_tmdb(discover:, watch_providers:, details: nil, discover_page: nil, recommendations: nil)
     originals = {
       discover: TmdbClient.method(:discover),
+      discover_page: TmdbClient.method(:discover_page),
       recommendations: TmdbClient.method(:recommendations),
       tv_recommendations: TmdbClient.method(:tv_recommendations),
       watch_providers: TmdbClient.method(:watch_providers),
@@ -281,7 +360,10 @@ class DeckBuilderTest < ActiveSupport::TestCase
     }
 
     TmdbClient.define_singleton_method(:discover, discover)
-    TmdbClient.define_singleton_method(:recommendations, ->(*) { [] })
+    TmdbClient.define_singleton_method(:discover_page, discover_page || ->(params, media: "movie") {
+      { "results" => discover.call(params, media: media), "total_pages" => 1 }
+    })
+    TmdbClient.define_singleton_method(:recommendations, recommendations || ->(*) { [] })
     TmdbClient.define_singleton_method(:tv_recommendations, ->(*) { [] })
     TmdbClient.define_singleton_method(:watch_providers, watch_providers)
     TmdbClient.define_singleton_method(:details, details || ->(*) { {} })

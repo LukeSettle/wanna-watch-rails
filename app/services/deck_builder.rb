@@ -4,20 +4,25 @@
 # unreleased hype titles, junk on deep pages), each deck mixes quality pools:
 #
 #   recs      - TMDB recommendations seeded by the players' liked titles
+#   taste     - popular titles in the genres the whole group leans toward
 #   popular   - current popular titles, filtered to well-rated and widely voted
 #   gems      - highly rated but less-known titles ("hidden gems")
 #   acclaimed - widely loved catalog picks across eras
 #
-# With no like history the deck is popular + gems + acclaimed. As players like
-# titles, recommendations take a growing share. Titles any player has already
-# liked, swiped past, or been dealt in recent games are excluded, so decks
-# never repeat.
+# Players' ratings from every game they've played (TasteProfile) drive the
+# recs and rank every pool, so titles that fit everyone come first. "Picked
+# for us" games (ww_for_you) are built almost entirely from that taste.
+#
+# Titles any player has already rated, swiped past, or been dealt in recent
+# games are excluded, so decks never repeat. When the pools run dry the deck
+# is topped up from progressively deeper catalog pages, so it never runs out.
 class DeckBuilder
   DECK_SIZE = 20
   CURATE_DECK_MAX = 40
-  MAX_SEEDS = 6
-  RECENT_GAMES_PER_PLAYER = 10
+  MAX_SEEDS = 8
   RECENT_DEALT_GAMES = 15
+  CATALOG_PAGES_PER_BUILD = 4
+  MAX_TMDB_PAGE = 500
   DOCUMENTARY_GENRE = 99
   FAMILY_GENRE = 10751
   KIDS_GENRE = 10762
@@ -31,6 +36,7 @@ class DeckBuilder
   def initialize(game)
     @game = game
     @query_params = parse_query_params
+    @taste = TasteProfile.new(game.players.map(&:user_id))
     @excluded_keys = excluded_media_keys
     @rng = Random.new(game.id * 31 + game.load_more_count)
   end
@@ -39,26 +45,10 @@ class DeckBuilder
     curated = curated_candidates
     return curated.first(CURATE_DECK_MAX) if curated.any?
 
-    recs = recommendation_candidates
-    plan = if favor_popular?
-      [
-        [recs, [recs.size, personalized_target].min],
-        [popular_candidates, 12],
-        [hidden_gem_candidates, 2],
-        [acclaimed_candidates, 2],
-      ]
-    else
-      [
-        [recs, [recs.size, personalized_target].min],
-        [popular_candidates, 6],
-        [hidden_gem_candidates, 4],
-        [acclaimed_candidates, 4],
-      ]
-    end
-
+    plan = deck_plan
     deck = interleave(plan)
     fill(deck, plan.map(&:first))
-    fill(deck, [fallback_candidates]) if deck.size < DECK_SIZE
+    fill_from_catalog(deck) if deck.size < DECK_SIZE
     deck.first(DECK_SIZE)
   end
 
@@ -90,6 +80,38 @@ class DeckBuilder
     end.shuffle(random: @rng)
   end
 
+  # [pool, budget] pairs, dealt round-robin by #interleave.
+  def deck_plan
+    recs = recommendation_candidates
+
+    if for_you?
+      [
+        [recs, DECK_SIZE],
+        [taste_candidates, 6],
+        [popular_candidates, 2],
+      ]
+    elsif favor_popular?
+      [
+        [recs, personalized_target],
+        [popular_candidates, 12],
+        [hidden_gem_candidates, 2],
+        [acclaimed_candidates, 2],
+      ]
+    else
+      [
+        [recs, personalized_target],
+        [taste_candidates, 3],
+        [popular_candidates, 5],
+        [hidden_gem_candidates, 3],
+        [acclaimed_candidates, 3],
+      ]
+    end
+  end
+
+  def for_you?
+    ActiveModel::Type::Boolean.new.cast(@query_params["ww_for_you"])
+  end
+
   def favor_popular?
     ActiveModel::Type::Boolean.new.cast(@query_params["favor_popular"])
   end
@@ -111,32 +133,19 @@ class DeckBuilder
     end
   end
 
-  # More like-history means a bigger personalized share (max half the deck).
+  # More like-history means a bigger personalized share.
   def personalized_target
-    [seed_refs.size * 2, DECK_SIZE / 2].min
+    [seed_refs.size * 3, DECK_SIZE * 3 / 5].min
   end
 
-  # Players' liked titles, most-shared first, rotated per round so
-  # "keep playing" seeds from different favorites.
+  # Players' liked titles (shared first), rotated per round so later rounds
+  # seed from different favorites.
   def seed_refs
-    @seed_refs ||= begin
-      like_counts = Hash.new(0)
-      @game.players.map(&:user_id).uniq.each do |user_id|
-        recent_likes = Player.where(user_id: user_id)
-                             .order(updated_at: :desc)
-                             .limit(RECENT_GAMES_PER_PLAYER)
-                             .pluck(:liked_movie_ids)
-                             .flatten
-        MediaKey.normalize_list(recent_likes).uniq.each { |key| like_counts[key] += 1 }
-      end
-
-      like_counts.sort_by { |key, count| [-count, key] }
-                 .map(&:first)
-                 .rotate(@game.load_more_count * MAX_SEEDS)
-                 .first(MAX_SEEDS)
-    end
+    @seed_refs ||= @taste.seed_keys.rotate(@game.load_more_count * MAX_SEEDS).first(MAX_SEEDS)
   end
 
+  # Titles recommended by several liked seeds, in genres the whole group
+  # enjoys, rank first.
   def recommendation_candidates
     scores = Hash.new(0)
     movies = {}
@@ -149,15 +158,49 @@ class DeckBuilder
       results.each do |item|
         movie = normalize(item, media)
         next unless suitable?(movie)
-        next unless available_on_providers?(movie)
         next if movie["vote_count"].to_i < 150 || movie["vote_average"].to_f < 6.2
 
-        scores[deck_key(movie)] += 1
+        scores[deck_key(movie)] += @taste.seed_weight(seed_key)
         movies[deck_key(movie)] = movie
       end
     end
 
-    scores.sort_by { |_, score| -score }.map { |key, _| movies[key] }
+    scores.sort_by { |key, score| -(score + taste_score(movies[key]) * 2 + quality_score(movies[key])) }
+          .map { |key, _| movies[key] }
+  end
+
+  # Popular titles in the group's favorite genres. Skipped when the game
+  # already picks genres.
+  def taste_candidates
+    @taste_candidates ||= begin
+      genres = @taste.top_genres
+      if genres.empty? || @query_params["with_genres"].present?
+        []
+      else
+        discover_pool(
+          "sort_by" => "popularity.desc",
+          "with_genres" => genres.join("|"),
+          "vote_count.gte" => 300,
+          "vote_average.gte" => 6.5,
+          "page" => page_for(:taste, 5)
+        )
+      end
+    end
+  end
+
+  def taste_score(movie)
+    @taste.group_score(movie["genre_ids"])
+  end
+
+  def quality_score(movie)
+    (movie["vote_average"].to_f - 7) / 2
+  end
+
+  # Best group fit first; TMDB's order breaks ties.
+  def rank_by_taste(movies)
+    return movies if @taste.empty?
+
+    movies.each_with_index.sort_by { |movie, index| [-taste_score(movie), index] }.map(&:first)
   end
 
   def popular_candidates
@@ -187,27 +230,45 @@ class DeckBuilder
     )
   end
 
-  def fallback_candidates
-    discover_pool(
-      "sort_by" => "popularity.desc",
-      "vote_count.gte" => 100,
-      "page" => page_for(:fallback, 2)
-    )
+  # Tops the deck up from the whole filtered catalog. The page window widens
+  # every round, so long games keep reaching titles nobody has seen yet.
+  def fill_from_catalog(deck)
+    discover_queries("sort_by" => "popularity.desc", "vote_count.gte" => 50).each do |media, params|
+      first_page = TmdbClient.discover_page(params.merge("page" => 1), media: media)
+      total_pages = first_page["total_pages"].to_i.clamp(1, MAX_TMDB_PAGE)
+      window = [total_pages, 10 + @game.load_more_count * 5].min
+      pages = [1] + (2..window).to_a.sample(CATALOG_PAGES_PER_BUILD, random: @rng)
+
+      pages.each do |page|
+        break if deck.size >= DECK_SIZE
+
+        results = page == 1 ? first_page["results"] : TmdbClient.discover(params.merge("page" => page), media: media)
+        fill(deck, [suitable_ranked(results.to_a, media)])
+      end
+    end
   end
 
   def discover_pool(overrides)
+    discover_queries(overrides).flat_map do |media, params|
+      suitable_ranked(TmdbClient.discover(params, media: media), media)
+    end.uniq { |movie| deck_key(movie) }
+  end
+
+  def discover_queries(overrides)
     ranges = year_ranges
     ranges = [[nil, nil]] if ranges.empty?
 
     media_types.flat_map do |media|
-      ranges.flat_map do |from, to|
+      ranges.map do |from, to|
         params = base_discover_params(media).merge(overrides)
         apply_year_range!(params, media, from, to)
-        TmdbClient.discover(params, media: media)
-                  .map { |item| normalize(item, media) }
-                  .select { |movie| suitable?(movie) }
+        [media, params]
       end
-    end.uniq { |movie| deck_key(movie) }
+    end
+  end
+
+  def suitable_ranked(results, media)
+    rank_by_taste(results.map { |item| normalize(item, media) }.select { |movie| suitable?(movie) })
   end
 
   def base_discover_params(media)
@@ -283,6 +344,8 @@ class DeckBuilder
   end
 
   def normalize(item, media)
+    item = item.merge("genre_ids" => item["genres"].to_a.map { |g| g["id"] }) if item["genre_ids"].nil? && item["genres"]
+
     if media == "tv"
       item.merge(
         "title" => item["name"].presence || item["title"],
@@ -299,9 +362,10 @@ class DeckBuilder
   end
 
   # Different page per pool, stable within a round, varies per game and round.
+  # Later rounds can reach deeper pages.
   def page_for(pool, max_page)
     @pages ||= {}
-    @pages[pool] ||= 1 + @rng.rand(max_page)
+    @pages[pool] ||= 1 + @rng.rand([max_page + @game.load_more_count, 20].min)
   end
 
   # Deal one card from each pool in turn (up to its budget) so the deck feels
@@ -410,10 +474,11 @@ class DeckBuilder
     true
   end
 
-  # Anything the players have liked or swiped before, plus anything dealt in
-  # their recent games (covers abandoned rounds), never comes back.
+  # Anything the players have rated, liked, or swiped before, plus anything
+  # dealt in their recent games (covers abandoned rounds), never comes back.
   def excluded_media_keys
     user_ids = @game.players.map(&:user_id).uniq
+    rated = MovieRating.where(user_id: user_ids).pluck(:media_key)
     swiped = Player.where(user_id: user_ids)
                    .pluck(:liked_movie_ids, :seen_movie_ids)
                    .flatten
@@ -424,6 +489,6 @@ class DeckBuilder
                          .pluck(:dealt_movie_ids)
                          .flatten
 
-    MediaKey.normalize_list(@game.dealt_movie_ids.to_a + swiped + recently_dealt).to_set
+    MediaKey.normalize_list(@game.dealt_movie_ids.to_a + rated + swiped + recently_dealt).to_set
   end
 end

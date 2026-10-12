@@ -102,6 +102,7 @@ class GamesController < ApiController
       seen_movie_ids: (player.seen_movie_ids.to_a + [key]).uniq,
       liked_movie_ids: liked ? (player.liked_movie_ids.to_a + [key]).uniq : player.liked_movie_ids
     )
+    game.record_swipe(player.user, key, liked: liked)
 
     matched = liked && game.players.count > 1 &&
               game.players.reload.all? { |p| p.liked_movie_ids.to_a.include?(key) }
@@ -144,8 +145,25 @@ class GamesController < ApiController
       seen_movie_ids: player.seen_movie_ids.to_a - [key],
       liked_movie_ids: player.liked_movie_ids.to_a - [key]
     )
+    MovieRating.where(user_id: player.user_id, media_key: key).destroy_all
 
     render json: { media_key: key }, status: :ok
+  end
+
+  # "Already watched": the title leaves this player's deck without counting
+  # as a game like, and their rating goes into their taste profile.
+  def watched
+    game = Game.find(params[:id])
+    player = game.players.find_by(user_id: params[:user_id])
+    return render json: { error: "Join the game first" }, status: :unprocessable_entity unless player
+
+    key = swipe_media_key
+    return render json: { error: "Invalid title" }, status: :unprocessable_entity unless key
+
+    player.update!(seen_movie_ids: (player.seen_movie_ids.to_a + [key]).uniq)
+    rating = game.record_watched(player.user, key, liked: ActiveModel::Type::Boolean.new.cast(params[:liked]))
+
+    render json: rating, status: :ok
   end
 
   def join

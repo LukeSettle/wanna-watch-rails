@@ -19,6 +19,12 @@ class UsersController < ApiController
     end
   end
 
+  def movie_ratings
+    user = User.find(params[:user_id])
+
+    render json: user.movie_ratings.order(updated_at: :desc), status: :ok
+  end
+
   private
 
   def user_params

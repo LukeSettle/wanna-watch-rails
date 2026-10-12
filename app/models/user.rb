@@ -35,6 +35,7 @@ class User < ApplicationRecord
   has_many :owned_games, class_name: "Game", foreign_key: "user_id"
   has_many :sent_invites, class_name: "GameInvite", foreign_key: "inviter_id", dependent: :destroy
   has_many :received_invites, class_name: "GameInvite", foreign_key: "invitee_id", dependent: :destroy
+  has_many :friend_removals, dependent: :destroy
 
   has_many :games, ->(user) {
     unscope(where: :user_id).where(
@@ -43,12 +44,23 @@ class User < ApplicationRecord
     ).distinct
   }, class_name: "Game"
 
+  # Co-players, most recently played with first. A removed friend reappears
+  # once you start a new game together.
   def friends
-    games.includes(players: :user)
-         .flat_map { |game| game.players.map(&:user) }
-         .compact
-         .uniq
-         .reject { |user| user.id == id }
+    removed_at = friend_removals.pluck(:friend_id, :updated_at).to_h
+
+    User.joins(players: :game)
+        .where(games: { id: games.select(:id) })
+        .where.not(id: id)
+        .group(:id)
+        .select("users.*, MAX(games.created_at) AS last_played_at")
+        .order("last_played_at DESC")
+        .reject { |friend| removed_at[friend.id] && friend.last_played_at <= removed_at[friend.id] }
+  end
+
+  def remove_friend!(friend)
+    removal = friend_removals.find_or_initialize_by(friend: friend)
+    removal.new_record? ? removal.save! : removal.touch
   end
 
   def notification_preferences_with_defaults

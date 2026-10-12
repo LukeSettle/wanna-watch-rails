@@ -11,6 +11,7 @@ Rails.application.routes.draw do
   get 'users/find_by_device_id'
   get 'friends/index'
   get 'friends/movie_ids'
+  post 'friends/remove'
 
   resources :game_invites, only: [:index, :create] do
     member do

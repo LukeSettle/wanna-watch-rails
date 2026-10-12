@@ -72,12 +72,9 @@ class GamesController < ApiController
     else
       game.with_lock do
         if game.deck_round != game.load_more_count
-          deck = DeckBuilder.new(game).build
-          game.update!(
-            deck: deck,
-            deck_round: game.load_more_count,
-            dealt_movie_ids: (game.dealt_movie_ids.to_a + deck.map { |m| MediaKey.for(m) }).uniq
-          )
+          built = DeckBuilder.new(game).build
+          game.update!(deck: built, deck_round: game.load_more_count)
+          game.remember_movies!(built)
         end
       end
 
@@ -225,14 +222,26 @@ class GamesController < ApiController
       return render json: { error: "Only the host can start the game" }, status: :forbidden
     end
 
-    if game.players.count < 2
-      return render json: { error: "Add a friend to the game first" }, status: :unprocessable_entity
+    unless game.asked_someone?
+      return render json: { error: "Invite at least one friend first" }, status: :unprocessable_entity
     end
 
     game.start unless game.started_at.present?
     broadcast_to_game(game, "#{user.username} started the game")
 
     render_game(game)
+  end
+
+  def share
+    game = Game.find(params[:id])
+    user = User.find(params[:user_id])
+
+    unless game.user_id == user.id || game.players.exists?(user_id: user.id)
+      return render json: { error: "Only players can share this game" }, status: :forbidden
+    end
+
+    game.update!(invite_sent_at: Time.current) if game.invite_sent_at.blank?
+    render json: { invite_sent_at: game.invite_sent_at }, status: :ok
   end
 
   def finish_matching
@@ -271,33 +280,24 @@ class GamesController < ApiController
     lists.reduce(:&)
   end
 
-  # One growing shared list per endless game. Each player is served whatever
-  # they haven't seen yet; when anyone runs low the list is extended with a
-  # fresh curated batch. Fully-seen movies are pruned (their ids stay in
-  # dealt_movie_ids) so the stored deck stays small.
+  # One growing shared list per continuous game. Titles are appended to
+  # game_movies and kept forever, so a friend who joins later swipes the same
+  # movies in the same order. Each player is served the next titles they have
+  # not seen; when they run low the list grows with a fresh batch.
   def endless_deck_for(game, player)
     movies = []
 
     game.with_lock do
-      seen = player.reload.seen_movie_ids.to_a.to_set
-      unseen = game.deck.to_a.reject { |m| seen.include?(MediaKey.for(m)) }
+      game.seed_movie_list_from_deck!
+      player.reload
 
-      if unseen.size < 10
+      if game.unseen_movie_count_for(player) < 10
         batch = DeckBuilder.new(game).build
-        players = game.players.reload
-        kept = game.deck.to_a.select do |m|
-          key = MediaKey.for(m)
-          players.any? { |p| !p.seen_movie_ids.to_a.include?(key) }
-        end
-        game.update!(
-          deck: kept + batch,
-          load_more_count: game.load_more_count + 1,
-          dealt_movie_ids: (game.dealt_movie_ids.to_a + batch.map { |m| MediaKey.for(m) }).uniq
-        )
-        unseen = game.deck.to_a.reject { |m| seen.include?(MediaKey.for(m)) }
+        game.remember_movies!(batch)
+        game.update!(load_more_count: game.load_more_count + 1)
       end
 
-      movies = unseen.first(20)
+      movies = game.movie_payloads_for(player, limit: 20)
     end
 
     movies

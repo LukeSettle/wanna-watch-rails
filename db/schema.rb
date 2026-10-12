@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_10_12_010000) do
+ActiveRecord::Schema[7.1].define(version: 2026_10_12_020000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "plpgsql"
 
@@ -38,6 +38,18 @@ ActiveRecord::Schema[7.1].define(version: 2026_10_12_010000) do
     t.index ["inviter_id"], name: "index_game_invites_on_inviter_id"
   end
 
+  create_table "game_movies", force: :cascade do |t|
+    t.bigint "game_id", null: false
+    t.string "media_key", null: false
+    t.integer "position", null: false
+    t.jsonb "payload", default: {}, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["game_id", "media_key"], name: "index_game_movies_on_game_id_and_media_key", unique: true
+    t.index ["game_id", "position"], name: "index_game_movies_on_game_id_and_position", unique: true
+    t.index ["game_id"], name: "index_game_movies_on_game_id"
+  end
+
   create_table "games", force: :cascade do |t|
     t.string "entry_code"
     t.text "query"
@@ -51,6 +63,7 @@ ActiveRecord::Schema[7.1].define(version: 2026_10_12_010000) do
     t.integer "deck_round", default: -1
     t.string "mode", default: "classic", null: false
     t.text "dealt_movie_ids", default: [], array: true
+    t.datetime "invite_sent_at"
     t.index ["user_id"], name: "index_games_on_user_id"
   end
 
@@ -123,6 +136,7 @@ ActiveRecord::Schema[7.1].define(version: 2026_10_12_010000) do
   add_foreign_key "game_invites", "games"
   add_foreign_key "game_invites", "users", column: "invitee_id"
   add_foreign_key "game_invites", "users", column: "inviter_id"
+  add_foreign_key "game_movies", "games"
   add_foreign_key "games", "users"
   add_foreign_key "movie_ratings", "users"
   add_foreign_key "players", "games"

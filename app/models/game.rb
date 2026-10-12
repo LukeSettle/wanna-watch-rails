@@ -2,6 +2,7 @@ class Game < ApplicationRecord
   belongs_to :user
   has_many :players
   has_many :game_invites, dependent: :destroy
+  has_many :game_movies, -> { order(:position) }, dependent: :destroy
 
 
   def endless?
@@ -78,8 +79,64 @@ class Game < ApplicationRecord
   end
 
   def genre_ids_for(key)
-    movie = deck.to_a.find { |m| MediaKey.for(m) == key }
+    movie = game_movies.find_by(media_key: key)&.payload
+    movie ||= deck.to_a.find { |entry| MediaKey.for(entry) == key }
     movie ? movie["genre_ids"].to_a.map(&:to_i) : []
+  end
+
+  # The host can start after asking someone, before that person has joined.
+  def asked_someone?
+    players.count >= 2 || invite_sent_at.present? || game_invites.where(status: %w[pending accepted]).exists?
+  end
+
+  # Append-only record of every title dealt into this game, in swipe order.
+  # Later joiners are served from this list, so it is never pruned.
+  def remember_movies!(movies)
+    known = game_movies.unscope(:order).pluck(:media_key).to_set
+    position = (game_movies.unscope(:order).maximum(:position) || -1) + 1
+    added = []
+
+    transaction do
+      Array(movies).each do |movie|
+        next unless movie.is_a?(Hash)
+
+        key = MediaKey.for(movie)
+        _media, movie_id = MediaKey.parse(key)
+        next if movie_id <= 0 || known.include?(key)
+
+        game_movies.create!(media_key: key, position: position, payload: movie)
+        known << key
+        added << key
+        position += 1
+      end
+
+      update!(dealt_movie_ids: (dealt_movie_ids.to_a + added).uniq) if added.any?
+    end
+
+    added
+  end
+
+  # Games started before the movie list existed keep whatever is still on deck.
+  def seed_movie_list_from_deck!
+    return if game_movies.exists?
+
+    remember_movies!(Array(deck))
+  end
+
+  def unseen_movie_count_for(player)
+    unseen_movies_for(player).count
+  end
+
+  def movie_payloads_for(player, limit:)
+    unseen_movies_for(player, limit: limit).map(&:payload)
+  end
+
+  def unseen_movies_for(player, limit: nil)
+    seen = player.seen_movie_ids.to_a
+    relation = game_movies.order(:position)
+    relation = relation.where.not(media_key: seen) if seen.any?
+    relation = relation.limit(limit) if limit
+    relation
   end
 end
 

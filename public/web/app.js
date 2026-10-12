@@ -18,7 +18,7 @@ const state = {
   finalMatchKey: null,
   libraryTab: "matches", // matches | likes | friends
   libraryFriendId: null,
-  inviteGateCleared: false, // true only after host taps Start (or joiner sees game begin)
+  inviteGateCleared: false, // true once the host has started (including a resumed game)
 };
 
 let cable = null;
@@ -242,6 +242,7 @@ async function refreshFriendsAndInvites() {
   }
   renderFriendsList();
   renderIncomingInvites();
+  syncInviteStartControls();
   maybeShowInvitePopup();
 }
 
@@ -331,9 +332,13 @@ async function inviteFriendToGame(friendId, gameId) {
       gameId,
     });
     upsertInvite(invite);
+    if (state.game && Number(state.game.id) === Number(gameId) && !state.game.invite_sent_at) {
+      state.game.invite_sent_at = new Date().toISOString();
+    }
     toast("Invite sent!");
     renderLobbyInvites();
     renderFriendsList();
+    syncInviteStartControls();
     return invite;
   } catch (error) {
     toast(error.serverMessage || "Couldn't send invite.");
@@ -437,6 +442,69 @@ function hasPartner() {
   return playerCount() >= 2;
 }
 
+function hasPendingInvite() {
+  if (!state.game) return false;
+  return outgoingInvitesForGame(state.game.id).length > 0;
+}
+
+function canStartGame() {
+  return hasPartner() || hasPendingInvite() || Boolean(state.game?.invite_sent_at);
+}
+
+function startHintText() {
+  if (hasPartner()) {
+    const friends = playerCount() - 1;
+    return `${friends} friend${friends === 1 ? "" : "s"} in the game. Start swiping whenever you're ready.`;
+  }
+  if (canStartGame()) {
+    return "Invite sent. You can start swiping now — they'll get the same movies when they join.";
+  }
+  return "Invite at least one friend, then you can start swiping before they join.";
+}
+
+function waitingForFriendsNote() {
+  const names = outgoingInvitesForGame(state.game.id)
+    .map((invite) => invite.invitee?.username)
+    .filter(Boolean);
+  if (names.length > 0) {
+    return `Waiting for ${names.join(", ")}. They'll swipe this same list when they join.`;
+  }
+  return "You're first. Anyone who joins later swipes this same list.";
+}
+
+function syncWaitingNote() {
+  const note = document.querySelector(".invite-waiting-note");
+  if (!state.game || playerCount() >= 2) {
+    note?.remove();
+    return;
+  }
+  if (note) note.textContent = waitingForFriendsNote();
+}
+
+function syncInviteStartControls() {
+  const beginBtn = document.getElementById("begin-game");
+  if (beginBtn) {
+    const ready = canStartGame();
+    beginBtn.disabled = !ready;
+    beginBtn.textContent = ready ? "Start swiping" : "Invite a friend to start";
+  }
+  const hint = document.querySelector(".invite-start-hint");
+  if (hint) hint.textContent = startHintText();
+}
+
+async function markInviteSent() {
+  if (!state.game || state.game.invite_sent_at) return true;
+  try {
+    const result = await backend.markGameShared(state.game.id, state.user.id);
+    state.game.invite_sent_at = result.invite_sent_at;
+    syncInviteStartControls();
+    return true;
+  } catch (error) {
+    toast(error.serverMessage || "Couldn't record that invite. Try again.");
+    return false;
+  }
+}
+
 function isHost() {
   return Number(state.game?.user_id) === Number(state.user?.id);
 }
@@ -460,14 +528,14 @@ function applyGameUpdate(game) {
 
   const hadBegun = Boolean(previous?.started_at);
   if (!hadPartner && nowHasPartner) {
-    toast(isHost() ? "Your partner joined — tap Start when you're ready!" : "Your partner joined!");
+    const joined = (game.players || []).find((player) => {
+      return !(previous?.players || []).some((old) => old.user?.id === player.user?.id);
+    });
+    const name = joined?.user?.username || "Your friend";
+    toast(isHost() && !game.started_at ? `${name} joined — tap Start when you're ready!` : `${name} joined!`);
   }
-  if (!isHost() && game.started_at) {
-    state.inviteGateCleared = true;
-  }
-  if (!hadBegun && game.started_at && state.inviteGateCleared) {
-    if (!isClassic()) fetchMovies();
-  }
+  if (game.started_at) state.inviteGateCleared = true;
+  if (!hadBegun && game.started_at && !isClassic()) fetchMovies();
 
   if (previous && game.load_more_count > previous.load_more_count && game.mode !== "endless") {
     state.finishedSent = false;
@@ -534,8 +602,7 @@ async function startGame(game) {
   state.finishedSent = false;
   state.lastSwipe = null;
   state.finalMatchKey = null;
-  const hosting = Number(game.user_id) === Number(state.user?.id);
-  state.inviteGateCleared = Boolean(game.started_at) && !hosting;
+  state.inviteGateCleared = Boolean(game.started_at);
   connectCable();
   cable.subscribe(gameChannelParams());
   render();
@@ -865,8 +932,9 @@ function render() {
   const key = renderKeyFor(screen);
   if (key === lastRenderKey) {
     if (screen === "lobby" || screen === "waiting" || screen === "invitePartner" || screen === "waitingToStart") {
-    updateDynamicLists(screen);
-  }
+      updateDynamicLists(screen);
+    }
+    if (screen === "match") syncWaitingNote();
     return;
   }
   lastRenderKey = key;
@@ -903,7 +971,7 @@ function renderKeyFor(screen) {
   }
   if (screen === "matchFound") return `matchFound-${state.game.id}`;
   if (screen === "lobby" || screen === "waiting" || screen === "invitePartner" || screen === "waitingToStart") {
-    return `${screen}-${state.game.id}-${playerCount()}-${outgoingInvitesForGame(state.game.id).length}-${state.inviteGateCleared}`;
+    return `${screen}-${state.game.id}-${playerCount()}-${outgoingInvitesForGame(state.game.id).length}-${state.game.invite_sent_at ? 1 : 0}-${state.inviteGateCleared}`;
   }
   if (screen === "results") return `results-${state.game.id}-${state.game.finished_at}`;
   return `${screen}-${Date.now()}`;
@@ -923,16 +991,7 @@ function updateDynamicLists(screen) {
     const { pendingByFriend } = inviteScreenFriendData();
     if (list) list.innerHTML = inviteFriendListHtml(pendingByFriend);
     if (players) players.innerHTML = playerListHtml();
-    if (beginBtn) {
-      beginBtn.disabled = !hasPartner();
-      beginBtn.textContent = hasPartner() ? "Start swiping" : "Add a friend to start";
-    }
-    const hint = document.querySelector(".invite-start-hint");
-    if (hint) {
-      hint.textContent = hasPartner()
-        ? `${playerCount() - 1} friend${playerCount() === 2 ? "" : "s"} ready — tap Start when everyone's in.`
-        : "Invite at least one friend, then tap Start.";
-    }
+    syncInviteStartControls();
   }
   if (screen === "waitingToStart") {
     const players = document.getElementById("player-list");
@@ -1157,7 +1216,7 @@ function renderHomeScreen() {
     <div class="screen">
       <div class="hero">
         <h1 class="headline">Movie night with your <span class="accent">partner</span></h1>
-        <p class="muted">Invite your spouse or friend, then swipe together until you match on one movie. First match wins — that's tonight's pick.</p>
+        <p class="muted">Invite your spouse or friend, then start swiping. They can join later and get the same movies. First match wins — that's tonight's pick.</p>
       </div>
 
       ${accountNudgeHtml("home")}
@@ -2060,22 +2119,35 @@ function bindInvitePartnerEvents() {
     }
   });
 
-  document.getElementById("text-invite")?.addEventListener("click", textInvitePartner);
+  document.getElementById("text-invite")?.addEventListener("click", async () => {
+    if (!(await markInviteSent())) return;
+    textInvitePartner();
+  });
   document.getElementById("copy-invite-link")?.addEventListener("click", async () => {
-    await navigator.clipboard.writeText(shareLink());
-    toast("Invite link copied!");
+    if (!(await markInviteSent())) return;
+    try {
+      await navigator.clipboard.writeText(shareLink());
+      toast("Invite link copied!");
+    } catch {
+      toast("Invite saved. Copy the link above if it isn't on your clipboard yet.");
+    }
   });
   document.getElementById("copy-invite-code")?.addEventListener("click", async () => {
-    await navigator.clipboard.writeText(state.game.entry_code);
-    toast("Code copied!");
+    if (!(await markInviteSent())) return;
+    try {
+      await navigator.clipboard.writeText(state.game.entry_code);
+      toast("Code copied!");
+    } catch {
+      toast("Invite saved. Copy the code above if it isn't on your clipboard yet.");
+    }
   });
   document.getElementById("leave-game")?.addEventListener("click", leaveGame);
   document.getElementById("begin-game")?.addEventListener("click", beginGameFromInvite);
 }
 
 async function beginGameFromInvite() {
-  if (!hasPartner()) {
-    toast("Add a friend to the game first.");
+  if (!canStartGame()) {
+    toast("Invite at least one friend first.");
     return;
   }
   const btn = document.getElementById("begin-game");
@@ -2083,11 +2155,10 @@ async function beginGameFromInvite() {
   try {
     state.inviteGateCleared = true;
     applyGameUpdate(await backend.beginGame(state.game.id, state.user.id));
-    if (!isClassic()) fetchMovies();
     lastRenderKey = null;
     render();
   } catch (error) {
-    state.inviteGateCleared = false;
+    state.inviteGateCleared = Boolean(state.game?.started_at);
     toast(error.serverMessage || "Could not start the game. Try again.");
     if (btn) btn.disabled = false;
   }
@@ -2107,7 +2178,7 @@ function renderInvitePartnerScreen() {
     <div class="screen invite-partner-screen">
       <div class="invite-hero card">
         <h1 class="headline-sm">Add friends to your <span class="accent">movie night</span></h1>
-        <p class="muted invite-lede">Invite your partner or friends, then start swiping together. ${modeLabel}</p>
+        <p class="muted invite-lede">Invite at least one friend, then start swiping. They'll see the same movies whenever they join. ${modeLabel}</p>
       </div>
 
       <section class="card list-card">
@@ -2150,12 +2221,10 @@ function renderInvitePartnerScreen() {
         <div id="player-list">${playerListHtml()}</div>
       </section>
 
-      <button class="btn btn-primary btn-big" id="begin-game" ${hasPartner() ? "" : "disabled"}>
-        ${hasPartner() ? "Start swiping" : "Add a friend to start"}
+      <button class="btn btn-primary btn-big" id="begin-game" ${canStartGame() ? "" : "disabled"}>
+        ${canStartGame() ? "Start swiping" : "Invite a friend to start"}
       </button>
-      <p class="muted center-text invite-start-hint">${hasPartner()
-        ? `${playerCount() - 1} friend${playerCount() === 2 ? "" : "s"} ready — tap Start when everyone's in.`
-        : "Invite at least one friend, then tap Start."}</p>
+      <p class="muted center-text invite-start-hint">${startHintText()}</p>
 
       <button class="link" id="leave-game">Cancel</button>
     </div>`;
@@ -2811,6 +2880,7 @@ function renderContinuousMatchScreen() {
           ? `<span class="muted partner-tag">${playerCount()} players</span>`
           : `<button type="button" class="meta-pill" id="invite-pill">+ Invite</button>`}
       </div>
+      ${playerCount() < 2 ? `<p class="muted invite-waiting-note">${esc(waitingForFriendsNote())}</p>` : ""}
       <div class="deck" id="deck"></div>
       ${swipeActionsHtml()}
     </div>`;

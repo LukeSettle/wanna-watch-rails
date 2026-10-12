@@ -134,6 +134,9 @@ const backend = {
   beginGame(gameId, userId) {
     return backendRequest(`/games/${gameId}/begin`, { method: "POST", body: { user_id: userId } });
   },
+  markGameShared(gameId, userId) {
+    return backendRequest(`/games/${gameId}/share`, { method: "POST", body: { user_id: userId } });
+  },
   finishMatching(gameId, userId, likedMovieIds, seenMovieIds) {
     return backendRequest(`/games/${gameId}/finish_matching`, {
       method: "POST",

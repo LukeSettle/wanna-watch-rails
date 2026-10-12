@@ -29,6 +29,7 @@ Rails.application.routes.draw do
       post :leave
       post :ready
       post :begin
+      post :share
       post :finish_matching
       post :swipe
       post :undo_swipe

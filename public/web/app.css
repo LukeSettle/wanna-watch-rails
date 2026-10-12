@@ -775,6 +775,12 @@ button.game-row {
   font-size: 0.88rem;
 }
 
+.invite-waiting-note {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
 .ok-text {
   color: var(--like);
   font-size: 0.85rem;

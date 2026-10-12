@@ -8,6 +8,8 @@ class GameInvite < ApplicationRecord
   validates :status, inclusion: { in: STATUSES }
   validate :invitee_is_not_inviter
 
+  after_create :mark_game_invited
+
   scope :pending, -> { where(status: "pending") }
 
   def pending?
@@ -65,6 +67,10 @@ class GameInvite < ApplicationRecord
 
   def invitee_is_not_inviter
     errors.add(:invitee, "can't invite yourself") if inviter_id.present? && inviter_id == invitee_id
+  end
+
+  def mark_game_invited
+    game.update!(invite_sent_at: Time.current) if game.invite_sent_at.blank?
   end
 
   def user_json(user)

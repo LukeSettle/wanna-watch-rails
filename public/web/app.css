@@ -883,6 +883,7 @@ button.game-row {
   flex: 1;
   min-height: 300px;
   touch-action: none;
+  container-type: size;
 }
 
 /* Allow scrolling the description when the top card is flipped. */
@@ -895,7 +896,8 @@ button.game-row {
   position: absolute;
   inset: 0;
   margin: auto;
-  max-width: 340px;
+  width: min(340px, 100cqi, calc((100cqb - var(--caption-h)) * 2 / 3));
+  height: min(100cqb, calc(min(340px, 100cqi) * 3 / 2 + var(--caption-h)));
   background: var(--surface);
   color: var(--ink);
   border-radius: 18px;

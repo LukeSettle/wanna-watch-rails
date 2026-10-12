@@ -18,9 +18,7 @@ function hasEntitlement(key) {
 }
 
 function openPlusShop() {
-  state.view = "shop";
-  lastRenderKey = null;
-  render();
+  openAppRoute("shop");
 }
 
 const LIBRARY_FREE_LIMIT = 10;
@@ -220,7 +218,8 @@ async function handleShopReturn() {
   const shop = params.get("shop");
   if (!shop) return false;
 
-  history.replaceState({}, "", "/");
+  history.replaceState({ ww: true, wwPushed: false, wwDepth: 0 }, "", "/");
+  history.pushState({ ww: true, wwPushed: true, wwDepth: 1 }, "", "/shop");
   if (shop === "portal") {
     state.view = "shop";
     return true;
@@ -261,9 +260,10 @@ function ownedLabel(product) {
 
 function renderShopScreen() {
   app.innerHTML = `
-    ${topBarHtml(`<button class="link" id="shop-back">Back</button>`)}
+    ${topBarHtml("")}
     <div class="screen shop-screen">
       <div class="hero">
+        <p class="kicker">Membership</p>
         <h1 class="headline-sm">WannaWatch+</h1>
         <p class="muted">$2.99/month. No ads, Fine-tune on custom games, and your full likes &amp; matches history while you're subscribed. Cancel anytime.</p>
       </div>
@@ -273,12 +273,6 @@ function renderShopScreen() {
     </div>`;
 
   bindBrandHome();
-  document.getElementById("shop-back").addEventListener("click", () => {
-    if (state.game) state.view = "match";
-    else restoreViewFromRoute();
-    lastRenderKey = null;
-    render();
-  });
 
   loadShopCatalog();
 }
@@ -359,9 +353,7 @@ async function startCheckout(productId, button) {
   }
   if (!state.user.email) {
     toast("Create a free login to buy & restore purchases.");
-    state.view = "register";
-    lastRenderKey = null;
-    render();
+    openAppRoute("register");
     return;
   }
 
@@ -376,9 +368,7 @@ async function startCheckout(productId, button) {
   } catch (error) {
     if (error.serverMessage && /login/i.test(error.serverMessage)) {
       toast(error.serverMessage);
-      state.view = "register";
-      lastRenderKey = null;
-      render();
+      openAppRoute("register");
       return;
     }
     toast(error.serverMessage || "Checkout failed.");

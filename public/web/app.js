@@ -1,7 +1,7 @@
 // WannaWatch web client. Single-page app with no build step.
 // Screens: name -> home -> invite partner -> match (swiping) -> waiting -> results.
 // First-match games require a partner before swiping.
-// Home pushes /configure and /movies/* so the browser back gesture returns home.
+// Every screen is a history entry, so the browser back button returns one step.
 
 const state = {
   user: null,
@@ -112,13 +112,23 @@ function accountNudgeHtml(context = "home") {
 }
 
 // ---------- browser history ----------
-// Custom game (/configure) and the movies library (/movies, /movies/likes,
-// /movies/friends, /movies/friends/:id) are real history entries. The system
-// back gesture and the on-screen Back buttons both return to home.
+// Each screen has its own URL. Pushing a screen lets the browser Back button
+// and the on-screen Back control return exactly one step.
+
+function normalizePath(pathname = location.pathname) {
+  return pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
+}
 
 function parseAppRoute(pathname = location.pathname) {
-  const path = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
+  const path = normalizePath(pathname);
   if (path === "/configure") return { view: "create" };
+  if (path === "/login") return { view: "login" };
+  if (path === "/register") return { view: "register" };
+  if (path === "/guest") return { view: "name" };
+  if (path === "/reset") return { view: "reset" };
+  if (path === "/shop") return { view: "shop" };
+  const play = path.match(/^\/play\/([A-Za-z0-9]+)$/);
+  if (play) return { view: "play", entryCode: play[1].toUpperCase() };
   const friend = path.match(/^\/movies\/friends\/(\d+)$/);
   if (friend) {
     return { view: "history", libraryTab: "friends", libraryFriendId: Number(friend[1]) };
@@ -137,7 +147,11 @@ function parseAppRoute(pathname = location.pathname) {
 }
 
 function appRoutePath() {
-  if (state.game) return null;
+  if (state.view === "shop") return "/shop";
+  if (state.view === "login") return "/login";
+  if (state.view === "register") return "/register";
+  if (state.view === "name") return "/guest";
+  if (state.view === "reset") return "/reset";
   if (state.view === "create") return "/configure";
   if (state.view === "history") {
     if (state.libraryTab === "likes") return "/movies/likes";
@@ -148,17 +162,39 @@ function appRoutePath() {
     }
     return "/movies";
   }
-  if (state.view === "home") return "/";
+  if (state.game) return `/play/${state.game.entry_code}`;
+  if (state.view === "home" || state.view === "play") return "/";
   return null;
+}
+
+function historyBasePath() {
+  return state.user?.username ? "/" : "/register";
+}
+
+function routeState(depth, extra = {}) {
+  return { ww: true, wwPushed: depth > 0, wwDepth: depth, ...extra };
 }
 
 function writeAppRoute(mode) {
   const path = appRoutePath();
   if (!path) return;
-  const pushed = mode === "push" ? true : Boolean(history.state?.wwPushed);
-  const data = { ww: true, wwPushed: pushed };
-  if (mode === "push" && location.pathname !== path) history.pushState(data, "", path);
+  const same = normalizePath() === path;
+  const depth = mode === "push" && !same
+    ? (history.state?.wwDepth || 0) + 1
+    : (history.state?.wwDepth || 0);
+  const data = routeState(depth);
+  if (mode === "push" && !same) history.pushState(data, "", path);
   else history.replaceState(data, "", path);
+}
+
+function applyRoute(route) {
+  state.view = route.view === "play" ? "home" : route.view;
+  if (route.view === "history") {
+    state.libraryTab = route.libraryTab;
+    state.libraryFriendId = route.libraryFriendId;
+  } else if (route.view !== "play") {
+    state.libraryFriendId = null;
+  }
 }
 
 function openAppRoute(view, { tab = "matches", friendId = null, mode = "push" } = {}) {
@@ -173,44 +209,72 @@ function openAppRoute(view, { tab = "matches", friendId = null, mode = "push" } 
   render();
 }
 
-function returnToHome() {
+function dismissModal() {
+  const overlay = document.getElementById("movie-modal");
+  if (!overlay) return;
+  overlay.hidden = true;
+  overlay.innerHTML = "";
+}
+
+function rememberOverlay() {
+  if (history.state?.wwModal) return;
+  const depth = (history.state?.wwDepth || 0) + 1;
+  history.pushState(routeState(depth, { wwModal: true }), "", `${location.pathname}${location.search}`);
+}
+
+function goBack() {
   if (history.state?.wwPushed) {
     history.back();
     return;
   }
+  if (state.game) {
+    leaveGame();
+    return;
+  }
+  returnToHome();
+}
+
+function returnToHome() {
+  dismissModal();
+  if (state.game) {
+    leaveGame();
+    return;
+  }
+  const depth = history.state?.wwDepth || 0;
   state.view = "home";
   state.libraryFriendId = null;
-  history.replaceState({ ww: true, wwPushed: false }, "", "/");
-  lastRenderKey = null;
-  window.scrollTo(0, 0);
-  render();
-}
-
-// Drop a pushed screen when a game starts so back doesn't reopen the form
-// underneath an active game.
-function discardPushedRoute() {
-  if (history.state?.wwPushed) {
-    suppressPopstate = true;
-    history.back();
+  if (depth > 0) {
+    history.go(-depth);
     return;
   }
-  if (location.pathname !== "/") {
-    history.replaceState({ ww: true, wwPushed: false }, "", "/");
-  }
-}
-
-function applyPoppedRoute() {
-  const route = parseAppRoute() || { view: "home" };
-  state.view = route.view;
-  if (route.view === "history") {
-    state.libraryTab = route.libraryTab;
-    state.libraryFriendId = route.libraryFriendId;
-  } else {
-    state.libraryFriendId = null;
-  }
+  history.replaceState(routeState(0), "", "/");
   lastRenderKey = null;
   window.scrollTo(0, 0);
   render();
+}
+
+function clearGameLocal() {
+  if (state.game) cable?.unsubscribe(gameChannelParams());
+  state.game = null;
+  state.movies = [];
+  state.serverMessages = [];
+  state.noMoreMovies = false;
+  state.finishedSent = false;
+  state.lastSwipe = null;
+  state.finalMatchKey = null;
+  state.inviteGateCleared = false;
+  if (cable && state.user?.id) cable.subscribe({ channel: "UserGamesChannel" });
+}
+
+function ensurePlayRoute(game) {
+  const path = `/play/${game.entry_code}`;
+  if (normalizePath() === path) {
+    const depth = history.state?.wwDepth ?? 1;
+    history.replaceState(routeState(depth), "", path);
+    return;
+  }
+  const depth = (history.state?.wwDepth || 0) + 1;
+  history.pushState(routeState(depth), "", path);
 }
 
 function onAppPopstate() {
@@ -218,42 +282,60 @@ function onAppPopstate() {
     suppressPopstate = false;
     return;
   }
-  if (!state.user?.username) return;
-  // A game occupies the home history entry. Ignore a forward into a screen
-  // that was already left behind.
-  if (state.game) {
-    if (location.pathname !== "/") {
-      suppressPopstate = true;
-      history.back();
-    }
+
+  const overlay = document.getElementById("movie-modal");
+  const modalOpen = overlay && !overlay.hidden;
+  if (modalOpen && !history.state?.wwModal) {
+    dismissModal();
     return;
   }
-  applyPoppedRoute();
+
+  let route = parseAppRoute() || { view: "home" };
+  if (!state.user?.username) {
+    const allowed = ["login", "register", "name", "reset"];
+    if (!allowed.includes(route.view)) {
+      route = { view: "register" };
+      if (normalizePath() !== "/register") {
+        history.replaceState(routeState(0), "", "/register");
+      }
+    }
+  }
+
+  if (state.game) {
+    const samePlay = route.view === "play" && state.game.entry_code.toUpperCase() === route.entryCode;
+    const overlayView = ["shop", "register", "login", "name", "reset"].includes(route.view);
+    if (!samePlay && !overlayView) clearGameLocal();
+  }
+
+  if (route.view === "play") {
+    if (state.user?.username && (!state.game || state.game.entry_code.toUpperCase() !== route.entryCode)) {
+      joinGameByCode(route.entryCode).then((joined) => {
+        if (!joined) leaveGame();
+      });
+      return;
+    }
+    state.view = "home";
+    lastRenderKey = null;
+    window.scrollTo(0, 0);
+    render();
+    return;
+  }
+
+  applyRoute(route);
+  lastRenderKey = null;
+  window.scrollTo(0, 0);
+  render();
 }
 
 function seedRouteOnLoad(route) {
-  state.view = route.view;
-  if (route.view === "history") {
-    state.libraryTab = route.libraryTab;
-    state.libraryFriendId = route.libraryFriendId;
+  applyRoute(route);
+  if (history.state?.ww && !history.state?.wwModal) return;
+  const base = historyBasePath();
+  const path = appRoutePath();
+  history.replaceState(routeState(0), "", base);
+  if (path && path !== base) {
+    history.pushState(routeState(1), "", path);
   }
-  if (history.state?.ww) return;
-  const path = location.pathname.length > 1 ? location.pathname.replace(/\/+$/, "") : location.pathname;
-  history.replaceState({ ww: true, wwPushed: false }, "", "/");
-  history.pushState({ ww: true, wwPushed: true }, "", path);
-}
-
-function restoreViewFromRoute() {
-  const route = parseAppRoute();
-  if (route?.view === "create" || route?.view === "history") {
-    state.view = route.view;
-    if (route.view === "history") {
-      state.libraryTab = route.libraryTab;
-      state.libraryFriendId = route.libraryFriendId;
-    }
-    return;
-  }
-  state.view = "home";
 }
 
 function bindAccountNudge(root = document) {
@@ -261,12 +343,10 @@ function bindAccountNudge(root = document) {
     button.addEventListener("click", () => {
       if (state.game && !confirm("Leave this game to create a login?")) return;
       if (state.game) {
-        cable?.unsubscribe(gameChannelParams());
-        state.game = null;
-        state.movies = [];
+        clearGameLocal();
+        history.replaceState(routeState(0), "", "/");
       }
-      state.view = "register";
-      render();
+      openAppRoute("register");
     });
   });
 }
@@ -283,9 +363,10 @@ async function boot() {
 
   const resetToken = new URLSearchParams(location.search).get("reset_token");
   if (resetToken) {
-    history.replaceState({}, "", "/");
     state.resetToken = resetToken;
     state.view = "reset";
+    history.replaceState(routeState(0), "", "/register");
+    history.pushState(routeState(1), "", "/reset");
     render();
     return;
   }
@@ -314,9 +395,15 @@ async function boot() {
   }
 
   if (state.user?.username) {
-    await enterHome();
+    await enterHome({ restoreRoute: true });
   } else {
-    state.view = "register";
+    const route = parseAppRoute();
+    const authViews = ["login", "register", "name", "reset"];
+    if (route && authViews.includes(route.view)) seedRouteOnLoad(route);
+    else {
+      state.view = "register";
+      history.replaceState(routeState(0), "", "/register");
+    }
     render();
   }
 }
@@ -344,23 +431,56 @@ function pendingEntryCode() {
   return new URLSearchParams(location.search).get("entry_code");
 }
 
-async function enterHome() {
+function collapseToHome() {
+  const depth = history.state?.wwDepth || 0;
+  if (depth <= 0) {
+    if (normalizePath() !== "/") history.replaceState(routeState(0), "", "/");
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const done = () => {
+      window.removeEventListener("popstate", done);
+      resolve();
+    };
+    window.addEventListener("popstate", done);
+    suppressPopstate = true;
+    history.go(-depth);
+  }).then(() => {
+    history.replaceState(routeState(0), "", "/");
+  });
+}
+
+async function enterHome({ restoreRoute = false } = {}) {
   connectCable();
+
+  if (!restoreRoute) await collapseToHome();
 
   const entryCode = pendingEntryCode();
   if (entryCode) {
-    history.replaceState({ ww: true, wwPushed: false }, "", "/");
+    history.replaceState(routeState(0), "", "/");
     const joined = await joinGameByCode(entryCode);
     if (joined) return;
   }
 
-  const route = parseAppRoute();
-  if (route && route.view !== "home") {
-    seedRouteOnLoad(route);
+  if (restoreRoute) {
+    const route = parseAppRoute();
+    if (route?.view === "play") {
+      history.replaceState(routeState(0), "", "/");
+      history.pushState(routeState(1), "", `/play/${route.entryCode}`);
+      const joined = await joinGameByCode(route.entryCode);
+      if (!joined) leaveGame();
+      return;
+    }
+    if (route && route.view !== "home") {
+      seedRouteOnLoad(route);
+    } else {
+      state.view = "home";
+      const keepSearch = location.pathname === "/" ? location.search : "";
+      history.replaceState(routeState(0), "", `/${keepSearch}`);
+    }
   } else {
     state.view = "home";
-    const keepSearch = location.pathname === "/" ? location.search : "";
-    history.replaceState({ ww: true, wwPushed: false }, "", `/${keepSearch}`);
+    if (normalizePath() !== "/") history.replaceState(routeState(0), "", "/");
   }
 
   cable.subscribe({ channel: "UserGamesChannel" });
@@ -750,7 +870,6 @@ async function joinGameByCode(code) {
 }
 
 async function startGame(game) {
-  discardPushedRoute();
   state.view = "home";
   state.game = game;
   state.movies = [];
@@ -761,6 +880,7 @@ async function startGame(game) {
   state.lastSwipe = null;
   state.finalMatchKey = null;
   state.inviteGateCleared = Boolean(game.started_at);
+  ensurePlayRoute(game);
   connectCable();
   cable.subscribe(gameChannelParams());
   render();
@@ -775,16 +895,19 @@ async function startGame(game) {
 }
 
 function leaveGame() {
-  if (state.game) cable.unsubscribe(gameChannelParams());
-  state.game = null;
-  state.movies = [];
-  state.inviteGateCleared = false;
-  state.view = "home";
+  dismissModal();
+  clearGameLocal();
   state.libraryFriendId = null;
-  if (location.pathname !== "/") {
-    history.replaceState({ ww: true, wwPushed: false }, "", "/");
+  state.view = "home";
+  const depth = history.state?.wwDepth || 0;
+  if (depth > 0) {
+    history.go(-depth);
+    return;
   }
-  cable.subscribe({ channel: "UserGamesChannel" });
+  if (normalizePath() !== "/") history.replaceState(routeState(0), "", "/");
+  cable?.subscribe({ channel: "UserGamesChannel" });
+  lastRenderKey = null;
+  window.scrollTo(0, 0);
   render();
   refreshGamesList();
   refreshFriendsAndInvites();
@@ -1069,9 +1192,9 @@ async function undoLastSwipe() {
 // ---------- rendering ----------
 
 function screenName() {
-  if (state.view === "login" || state.view === "reset" || state.view === "shop") return state.view;
-  if (!state.user?.username) return state.view === "name" ? "name" : "register";
-  if (!state.game) return state.view;
+  if (["login", "reset", "shop", "register", "name"].includes(state.view)) return state.view;
+  if (!state.user?.username) return "register";
+  if (!state.game) return state.view === "play" ? "home" : state.view;
   if (shouldShowInviteScreen()) {
     return isHost() ? "invitePartner" : "waitingToStart";
   }
@@ -1089,12 +1212,16 @@ function screenName() {
 }
 
 function syncDocumentTitle(screen) {
-  if (screen === "create") document.title = "Custom game — WannaWatch";
-  else if (screen === "history") {
-    document.title = state.libraryTab === "friends"
-      ? "Friend matches — WannaWatch"
-      : "Your movies — WannaWatch";
-  } else document.title = "WannaWatch — Swipe movies with friends";
+  const titles = {
+    create: "Custom game — WannaWatch",
+    shop: "WannaWatch+ — WannaWatch",
+    login: "Log in — WannaWatch",
+    register: "Sign up — WannaWatch",
+    name: "Play as a guest — WannaWatch",
+    reset: "Reset password — WannaWatch",
+    history: state.libraryTab === "friends" ? "Friend likes — WannaWatch" : "Your movies — WannaWatch",
+  };
+  document.title = titles[screen] || "WannaWatch — Swipe movies with friends";
 }
 
 function render() {
@@ -1110,7 +1237,7 @@ function render() {
     return;
   }
   lastRenderKey = key;
-  document.getElementById("movie-modal")?.setAttribute("hidden", "");
+  if (!history.state?.wwModal) dismissModal();
 
   const renderers = {
     name: renderNameScreen,
@@ -1172,11 +1299,15 @@ function updateDynamicLists(screen) {
 }
 
 function topBarHtml(subtitle) {
+  const canBack = (history.state?.wwDepth || 0) > 0;
   return `
     <header class="topbar">
-      <div class="brand" id="brand-home">
-        <img src="/logo.png" alt="">
-        <span>WannaWatch</span>
+      <div class="topbar-lead">
+        ${canBack ? `<button type="button" class="back-btn" id="nav-back" aria-label="Back"><span aria-hidden="true">‹</span></button>` : ""}
+        <div class="brand" id="brand-home">
+          <img src="/logo.png" alt="">
+          <span>WannaWatch</span>
+        </div>
       </div>
       ${subtitle ? `<span class="topbar-subtitle">${subtitle}</span>` : ""}
     </header>`;
@@ -1191,14 +1322,28 @@ function bindBrandHome() {
     }
     returnToHome();
   });
+  document.getElementById("nav-back")?.addEventListener("click", () => {
+    goBack();
+  });
+}
+
+function authBackHtml() {
+  if (!(history.state?.wwDepth > 0)) return "";
+  return `<button type="button" class="back-btn auth-back" id="auth-back" aria-label="Back"><span aria-hidden="true">‹</span></button>`;
+}
+
+function bindAuthBack() {
+  document.getElementById("auth-back")?.addEventListener("click", goBack);
 }
 
 // ---------- name screen ----------
 
 function renderNameScreen() {
   app.innerHTML = `
-    <div class="screen center">
+    <div class="screen center auth-screen">
+      ${authBackHtml()}
       <img src="/logo.png" alt="WannaWatch" class="logo">
+      <p class="kicker">Walk-up ticket</p>
       <h1 class="headline-sm">Play as a guest</h1>
       <p class="muted">Jump right in with just a name. You can save an account later.</p>
       <form id="name-form" class="card form-card">
@@ -1210,9 +1355,10 @@ function renderNameScreen() {
       <button class="link" id="go-login">Already have an account? Log in</button>
     </div>`;
 
+  bindAuthBack();
+
   document.getElementById("go-register").addEventListener("click", () => {
-    state.view = "register";
-    render();
+    openAppRoute("register");
   });
 
   document.getElementById("name-form").addEventListener("submit", async (event) => {
@@ -1228,8 +1374,7 @@ function renderNameScreen() {
   });
 
   document.getElementById("go-login").addEventListener("click", () => {
-    state.view = "login";
-    render();
+    openAppRoute("login");
   });
 }
 
@@ -1237,8 +1382,10 @@ function renderNameScreen() {
 
 function renderLoginScreen() {
   app.innerHTML = `
-    <div class="screen center">
+    <div class="screen center auth-screen">
+      ${authBackHtml()}
       <img src="/logo.png" alt="WannaWatch" class="logo">
+      <p class="kicker">Members</p>
       <h1 class="headline-sm">Welcome back</h1>
       <form id="login-form" class="card form-card">
         <label for="login-email">Email</label>
@@ -1250,6 +1397,8 @@ function renderLoginScreen() {
       <button class="link" id="forgot-password">Forgot password?</button>
       <button class="link" id="back-to-name">${state.user?.username ? "Back to home" : "New here? Create an account"}</button>
     </div>`;
+
+  bindAuthBack();
 
   document.getElementById("login-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -1279,10 +1428,7 @@ function renderLoginScreen() {
 
   document.getElementById("back-to-name").addEventListener("click", () => {
     if (state.user?.username) returnToHome();
-    else {
-      state.view = "register";
-      render();
-    }
+    else openAppRoute("register");
   });
 }
 
@@ -1292,9 +1438,11 @@ function renderRegisterScreen() {
 
   app.innerHTML = `
     ${isNewVisitor ? "" : topBarHtml("")}
-    <div class="screen center">
+    <div class="screen center auth-screen">
+      ${isNewVisitor ? authBackHtml() : ""}
       ${isNewVisitor
         ? `<img src="/logo.png" alt="WannaWatch" class="logo">
+           <p class="kicker">Tonight's feature</p>
            <h1 class="headline">Pick tonight's movie <span class="accent">together</span></h1>
            <p class="muted">Swipe with your partner until you both like the same movie — first match wins.</p>`
         : `<h1 class="headline-sm">Save your account</h1>
@@ -1319,6 +1467,7 @@ function renderRegisterScreen() {
     </div>`;
 
   if (!isNewVisitor) bindBrandHome();
+  bindAuthBack();
 
   document.getElementById("register-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -1345,13 +1494,11 @@ function renderRegisterScreen() {
   });
 
   document.getElementById("play-as-guest")?.addEventListener("click", () => {
-    state.view = "name";
-    render();
+    openAppRoute("name");
   });
 
   document.getElementById("go-login")?.addEventListener("click", () => {
-    state.view = "login";
-    render();
+    openAppRoute("login");
   });
 
   document.getElementById("back-home")?.addEventListener("click", () => {
@@ -1361,8 +1508,10 @@ function renderRegisterScreen() {
 
 function renderResetScreen() {
   app.innerHTML = `
-    <div class="screen center">
+    <div class="screen center auth-screen">
+      ${authBackHtml()}
       <img src="/logo.png" alt="WannaWatch" class="logo">
+      <p class="kicker">Members</p>
       <h1 class="headline-sm">Set a new password</h1>
       <form id="reset-form" class="card form-card">
         <label for="reset-password">New password <span class="muted">(8+ characters)</span></label>
@@ -1370,6 +1519,8 @@ function renderResetScreen() {
         <button type="submit" class="btn btn-primary">Save and log in</button>
       </form>
     </div>`;
+
+  bindAuthBack();
 
   document.getElementById("reset-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -1391,6 +1542,7 @@ function renderHomeScreen() {
     ${topBarHtml(`<button class="link" id="edit-name">${usernameWithFlair(state.user)}</button>`)}
     <div class="screen">
       <div class="hero">
+        <p class="kicker">Now showing</p>
         <h1 class="headline">Movie night with your <span class="accent">partner</span></h1>
         <p class="muted">Invite your spouse or friend, then start swiping. They can join later and get the same movies. First match wins — that's tonight's pick.</p>
       </div>
@@ -1466,8 +1618,7 @@ function renderHomeScreen() {
   });
 
   document.getElementById("open-shop")?.addEventListener("click", () => {
-    state.view = "shop";
-    render();
+    openAppRoute("shop");
   });
 
   document.getElementById("join-form").addEventListener("submit", (event) => {
@@ -1655,6 +1806,7 @@ function renderFriendsList() {
 
   container.innerHTML = state.friends.map((friend) => `
     <div class="friend-row">
+      <span class="friend-avatar" aria-hidden="true">${esc(friendInitial(friend.username))}</span>
       <div class="friend-info">
         <strong>${esc(friend.username || "Player")}</strong>
         ${friend.last_played_at ? `<span class="muted">Played ${esc(lastPlayedLabel(friend.last_played_at))}</span>` : ""}
@@ -1680,6 +1832,11 @@ function renderFriendsList() {
   container.querySelectorAll("[data-remove-friend]").forEach((btn) => {
     btn.addEventListener("click", () => removeFriend(Number(btn.dataset.removeFriend)));
   });
+}
+
+function friendInitial(name) {
+  const clean = (name || "Friend").trim();
+  return clean.slice(0, 1).toUpperCase();
 }
 
 function lastPlayedLabel(timestamp) {
@@ -1783,15 +1940,15 @@ async function renderCreateScreen() {
     { label: "Classics", from: 1950, to: 1979 },
   ];
   const vibePresets = [
-    { label: "Surprise me", genres: [], rating: 0, era: "Any time", favorPopular: false, includeKids: false },
-    { label: "Picked for us", genres: [], rating: 0, era: "Any time", favorPopular: false, includeKids: false, forYou: true },
-    { label: "Crowd favorites", genres: [], rating: 6, era: "Any time", favorPopular: true, includeKids: false },
-    { label: "Date night", genres: [10749, 35, 18], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
-    { label: "Laugh out loud", genres: [35], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
-    { label: "Edge of your seat", genres: [53, 27, 9648, 80], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
-    { label: "Family night", genres: [10751, 16, 12], rating: 6, era: "Any time", favorPopular: false, includeKids: true },
-    { label: "Critically acclaimed", genres: [], rating: 8, era: "Any time", favorPopular: false, includeKids: false },
-    { label: "Throwback", genres: [], rating: 7, era: "80s & 90s", favorPopular: false, includeKids: false },
+    { mark: "01", label: "Surprise me", blurb: "No rules. Let the reel pick.", genres: [], rating: 0, era: "Any time", favorPopular: false, includeKids: false },
+    { mark: "02", label: "Picked for us", blurb: "Shaped by what you've loved.", genres: [], rating: 0, era: "Any time", favorPopular: false, includeKids: false, forYou: true },
+    { mark: "03", label: "Crowd favorites", blurb: "The titles everyone knows.", genres: [], rating: 6, era: "Any time", favorPopular: true, includeKids: false },
+    { mark: "04", label: "Date night", blurb: "Romance, warmth, a little laugh.", genres: [10749, 35, 18], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
+    { mark: "05", label: "Laugh out loud", blurb: "Comedies worth sharing a couch for.", genres: [35], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
+    { mark: "06", label: "Edge of your seat", blurb: "Thrillers, mysteries, and chills.", genres: [53, 27, 9648, 80], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
+    { mark: "07", label: "Family night", blurb: "Something the whole row can watch.", genres: [10751, 16, 12], rating: 6, era: "Any time", favorPopular: false, includeKids: true },
+    { mark: "08", label: "Critically acclaimed", blurb: "High scores, lasting aftertaste.", genres: [], rating: 8, era: "Any time", favorPopular: false, includeKids: false },
+    { mark: "09", label: "Throwback", blurb: "A double feature from the 80s and 90s.", genres: [], rating: 7, era: "80s & 90s", favorPopular: false, includeKids: false },
   ];
   const ratingPresets = [
     { label: "Any rating", min: 0 },
@@ -1838,14 +1995,14 @@ async function renderCreateScreen() {
 
             <div class="field-block">
               <label>How good does it need to be?</label>
-              <div class="chips single" id="rating-chips">
+              <div class="chips segmented single" id="rating-chips">
                 ${presetChips(ratingPresets, (item) => `data-min="${item.min}"`)}
               </div>
             </div>
 
             <div class="field-block" id="runtime-block">
               <label>How long is movie night?</label>
-              <div class="chips single" id="runtime-chips">
+              <div class="chips segmented single" id="runtime-chips">
                 ${presetChips(runtimePresets, (item) => `data-min="${item.min}" data-max="${item.max}"`)}
               </div>
             </div>
@@ -1868,13 +2025,13 @@ async function renderCreateScreen() {
 
   const fineTuneSection = isPlus()
     ? `<details class="card fine-tune">
-          <summary>Fine-tune <span class="muted">(optional)</span></summary>
+          <summary>Fine-tune the program <span class="muted">(optional)</span></summary>
           ${fineTuneFields}
         </details>`
     : `<section class="card fine-tune fine-tune-locked">
           <div class="fine-tune-lock">
             <div>
-              <strong>Fine-tune</strong>
+              <strong>Fine-tune the program</strong>
               <p class="muted">Genres, eras, runtime, and language — WannaWatch+.</p>
             </div>
             <button type="button" class="btn btn-secondary btn-small" id="unlock-fine-tune">Get WannaWatch+</button>
@@ -1885,10 +2042,11 @@ async function renderCreateScreen() {
   app.innerHTML = `
     ${topBarHtml("")}
     <div class="screen create-screen">
-      <h1 class="headline-sm">Custom game</h1>
+      <p class="kicker">Tonight's bill</p>
+      <h1 class="headline-sm">Set the program</h1>
       <p class="muted create-lede">${isPlus()
-        ? "Pick a mode and vibe — Fine-tune below if you want."
-        : "Pick a mode and vibe. WannaWatch+ unlocks Fine-tune."}</p>
+        ? "Choose how you play and the mood of the night. The details underneath are optional."
+        : "Choose how you play and the mood of the night. WannaWatch+ opens the finer controls."}</p>
       <form id="create-form">
         <section class="card form-card">
           <label>Game mode</label>
@@ -1910,16 +2068,23 @@ async function renderCreateScreen() {
 
         <section class="card form-card">
           <div class="field-block">
-            <label>What's the vibe?</label>
-            <p class="hint">One tap sets the mood — tweak below after. “Picked for us” builds the deck from what everyone in the game has liked before.</p>
-            <div class="chips single" id="vibe-chips">
-              ${vibePresets.map((v, i) => `<button type="button" class="chip ${i === 0 ? "selected" : ""}" data-vibe="${i}">${esc(v.label)}</button>`).join("")}
+            <label>What's the mood?</label>
+            <p class="hint">One choice sets the night. “Picked for us” builds the deck from titles you've already liked.</p>
+            <div class="vibe-grid" id="vibe-chips">
+              ${vibePresets.map((v, i) => `
+                <button type="button" class="chip vibe-card ${i === 0 ? "selected" : ""}" data-vibe="${i}">
+                  <span class="vibe-mark">${v.mark}</span>
+                  <span class="vibe-copy">
+                    <strong>${esc(v.label)}</strong>
+                    <span>${esc(v.blurb)}</span>
+                  </span>
+                </button>`).join("")}
             </div>
           </div>
 
           <div class="field-block">
             <label>Movies or TV?</label>
-            <div class="chips single" id="media-chips">
+            <div class="chips segmented single" id="media-chips">
               <button type="button" class="chip selected" data-value="movie">Movies</button>
               <button type="button" class="chip" data-value="tv">TV shows</button>
               <button type="button" class="chip" data-value="both">Both</button>
@@ -1936,7 +2101,7 @@ async function renderCreateScreen() {
 
         ${fineTuneSection}
 
-        <div class="button-row sticky-actions">
+        <div class="button-row">
           <button type="button" class="btn btn-ghost" id="cancel-create">Back</button>
           <button type="submit" class="btn btn-primary" id="create-submit">Invite friends</button>
         </div>
@@ -2084,7 +2249,7 @@ async function renderCreateScreen() {
   });
 
   document.getElementById("cancel-create").addEventListener("click", () => {
-    returnToHome();
+    goBack();
   });
 
   document.getElementById("create-form").addEventListener("submit", async (event) => {
@@ -2232,6 +2397,7 @@ function inviteFriendListHtml(pendingByFriend) {
     const inGame = (state.game.players || []).some((p) => p.user?.id === friend.id);
     return `
     <div class="friend-row">
+      <span class="friend-avatar" aria-hidden="true">${esc(friendInitial(friend.username))}</span>
       <div class="friend-info">
         <strong>${esc(friend.username || "Friend")}</strong>
         ${inGame
@@ -2310,7 +2476,7 @@ function bindInvitePartnerEvents() {
       toast("Invite saved. Copy the code above if it isn't on your clipboard yet.");
     }
   });
-  document.getElementById("leave-game")?.addEventListener("click", leaveGame);
+  document.getElementById("leave-game")?.addEventListener("click", goBack);
   document.getElementById("begin-game")?.addEventListener("click", beginGameFromInvite);
 }
 
@@ -2421,7 +2587,7 @@ function renderWaitingToStartScreen() {
     </div>`;
 
   bindBrandHome();
-  document.getElementById("leave-game").addEventListener("click", leaveGame);
+  document.getElementById("leave-game").addEventListener("click", goBack);
 }
 
 function renderLobbyScreen() {
@@ -2487,7 +2653,7 @@ function renderLobbyScreen() {
     sendReady();
   });
 
-  document.getElementById("leave-game").addEventListener("click", leaveGame);
+  document.getElementById("leave-game").addEventListener("click", goBack);
 }
 
 function renderLobbyInvites() {
@@ -2751,6 +2917,7 @@ async function fillCardDetails(card, movie) {
 }
 
 async function openMovieModal(movieId, mediaType) {
+  rememberOverlay();
   let overlay = document.getElementById("movie-modal");
   if (!overlay) {
     overlay = document.createElement("div");
@@ -2761,7 +2928,10 @@ async function openMovieModal(movieId, mediaType) {
   overlay.innerHTML = `<div class="modal-sheet"><p class="muted">Loading…</p></div>`;
   overlay.hidden = false;
 
-  const close = () => { overlay.hidden = true; overlay.innerHTML = ""; };
+  const close = () => {
+    if (history.state?.wwModal) history.back();
+    else dismissModal();
+  };
   overlay.addEventListener("pointerup", (event) => {
     if (event.target === overlay) close();
   }, { once: true });
@@ -2838,6 +3008,7 @@ function updateMatchesPill() {
 }
 
 async function showMatchesModal() {
+  rememberOverlay();
   const ids = matchedIdsOf(state.game);
   let overlay = document.getElementById("movie-modal");
   if (!overlay) {
@@ -2848,7 +3019,10 @@ async function showMatchesModal() {
   }
   overlay.hidden = false;
 
-  const close = () => { overlay.hidden = true; overlay.innerHTML = ""; };
+  const close = () => {
+    if (history.state?.wwModal) history.back();
+    else dismissModal();
+  };
   overlay.addEventListener("pointerup", (event) => {
     if (event.target === overlay) close();
   }, { once: true });
@@ -3635,7 +3809,8 @@ async function renderHistoryScreen() {
   app.innerHTML = `
     ${topBarHtml("")}
     <div class="screen library-screen">
-      <h1 class="headline-sm">Your movies</h1>
+      <p class="kicker">${state.libraryTab === "friends" ? "Double feature" : "Your collection"}</p>
+      <h1 class="headline-sm">${state.libraryTab === "friends" ? "Liked with friends" : "Your movies"}</h1>
       <p class="muted">${isPlus()
         ? "Likes and matches across every night — pick tonight’s film, or narrow a list with a friend."
         : `Free keeps your last ${LIBRARY_FREE_LIMIT} likes and matches. WannaWatch+ ($2.99/mo) unlocks the full history.`}</p>
@@ -3647,7 +3822,7 @@ async function renderHistoryScreen() {
         <button class="tab ${state.libraryTab === "friends" ? "active" : ""}" data-lib-tab="friends">With a friend</button>
       </div>
       <div id="history-content"><p class="muted">Loading…</p></div>
-      <button class="link" id="back-home">Back to home</button>
+      <button class="link" id="back-home">Back</button>
     </div>`;
 
   bindBrandHome();
@@ -3655,16 +3830,14 @@ async function renderHistoryScreen() {
   renderSettledBanner();
 
   document.getElementById("back-home").addEventListener("click", () => {
-    returnToHome();
+    goBack();
   });
 
   document.querySelectorAll("[data-lib-tab]").forEach((button) => {
     button.addEventListener("click", () => {
-      state.libraryTab = button.dataset.libTab;
-      if (state.libraryTab !== "friends") state.libraryFriendId = null;
-      writeAppRoute("replace");
-      lastRenderKey = null;
-      render();
+      const tab = button.dataset.libTab;
+      if (tab === state.libraryTab && !(tab === "friends" && state.libraryFriendId)) return;
+      openAppRoute("history", { tab, friendId: null, mode: "push" });
     });
   });
 
@@ -3826,19 +3999,31 @@ async function renderLibraryFriends(container) {
   const friend = state.friends.find((f) => f.id === state.libraryFriendId) || null;
 
   container.innerHTML = `
-    <label class="library-friend-label" for="library-friend">Friend</label>
-    <select id="library-friend" class="library-friend-select">
-      <option value="">Choose a friend…</option>
-      ${state.friends.map((f) => `
-        <option value="${f.id}" ${friend?.id === f.id ? "selected" : ""}>${esc(f.username || "Player")}</option>
-      `).join("")}
-    </select>
-    <div id="friend-library-body"><p class="muted">Pick a friend to see titles you’ve both liked.</p></div>`;
+    <div class="friend-cinema">
+      <p class="kicker">Choose a seatmate</p>
+      <div class="friend-picker" role="listbox" aria-label="Friends">
+        ${state.friends.map((f) => `
+          <button type="button" class="friend-pick ${friend?.id === f.id ? "selected" : ""}" data-friend-pick="${f.id}" role="option" aria-selected="${friend?.id === f.id ? "true" : "false"}">
+            <span class="friend-avatar" aria-hidden="true">${esc(friendInitial(f.username))}</span>
+            <span class="friend-pick-name">${esc(f.username || "Player")}</span>
+          </button>`).join("")}
+      </div>
+      <div id="friend-library-body">
+        ${friend ? "" : `
+          <div class="reel-empty">
+            <p class="kicker">Now showing</p>
+            <h2>Pick someone you've watched with</h2>
+            <p class="muted">Shared likes and their side of the aisle will light up here.</p>
+          </div>`}
+      </div>
+    </div>`;
 
-  document.getElementById("library-friend").addEventListener("change", (event) => {
-    state.libraryFriendId = event.target.value ? Number(event.target.value) : null;
-    writeAppRoute("replace");
-    renderLibraryFriends(container);
+  container.querySelectorAll("[data-friend-pick]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const friendId = Number(button.dataset.friendPick);
+      if (friendId === state.libraryFriendId) return;
+      openAppRoute("history", { tab: "friends", friendId, mode: "push" });
+    });
   });
 
   if (!friend) return;
@@ -3855,28 +4040,40 @@ async function renderLibraryFriends(container) {
     mine = normalizeMediaKeyList(data.myLikedMovieIds || []);
     theirs = normalizeMediaKeyList(data.friendsLikedMovieIds || []);
   } catch {
-    body.innerHTML = `<p class="muted">Couldn't load shared likes. Try again.</p>`;
+    if (body.isConnected) body.innerHTML = `<p class="muted">Couldn't load shared likes. Try again.</p>`;
     return;
   }
 
+  if (!body.isConnected) return;
+
   body.innerHTML = `
-    <div class="library-toolbar">
-      <p class="muted"><strong>${shared.length}</strong> in common · you liked ${mine.length} · ${esc(friend.username)} liked ${theirs.length}</p>
+    <header class="reel-header">
+      <p class="kicker">Now showing</p>
+      <h2>A reel with ${esc(friend.username)}</h2>
+      <p class="muted">Titles from the nights you played together.</p>
+    </header>
+    <div class="ticket-row">
+      <div class="ticket"><strong>${shared.length}</strong><span>In common</span></div>
+      <div class="ticket"><strong>${mine.length}</strong><span>You liked</span></div>
+      <div class="ticket"><strong>${theirs.length}</strong><span>They liked</span></div>
     </div>
-    ${shared.length >= 2
-      ? `<button type="button" class="btn btn-primary" id="sift-with-friend">Narrow it down together</button>
-         <p class="hint">Starts a first-match game using only the movies you’ve both already liked.</p>`
-      : shared.length === 1
-        ? `<button type="button" class="btn btn-primary" id="settle-shared-one">That’s the one — settle</button>`
-        : `<p class="muted">No shared likes yet.${theirs.length ? "" : ` Play a game with ${esc(friend.username)} first.`}</p>`}
-    ${shared.length > 1
-      ? `<button type="button" class="btn btn-ghost btn-small" id="settle-random-shared">Pick one for us</button>`
-      : ""}
-    <div id="library-grid" class="results-grid"></div>
+    <div class="reel-actions">
+      ${shared.length >= 2
+        ? `<button type="button" class="btn btn-primary" id="sift-with-friend">Narrow it down together</button>
+           <p class="hint">A first-match game using only movies you’ve both already liked.</p>`
+        : shared.length === 1
+          ? `<button type="button" class="btn btn-primary" id="settle-shared-one">That’s the one — settle</button>`
+          : `<p class="muted">No shared likes yet.${theirs.length ? "" : ` Play a game with ${esc(friend.username)} first.`}</p>`}
+      ${shared.length > 1
+        ? `<button type="button" class="btn btn-ghost btn-small" id="settle-random-shared">Pick one for us</button>`
+        : ""}
+    </div>
+    ${shared.length ? `<h3 class="reel-title">You both liked</h3>` : ""}
+    <div id="library-grid" class="results-grid poster-grid"></div>
     ${theirs.length
-      ? `<h2 class="friend-likes-heading">${esc(friend.username)}’s likes</h2>
-         <p class="muted">Everything ${esc(friend.username)} liked in games you played together.</p>
-         <div id="friend-likes-grid" class="results-grid"></div>`
+      ? `<h3 class="reel-title">${esc(friend.username)}’s likes</h3>
+         <p class="muted reel-note">Everything they liked when you played together.</p>
+         <div id="friend-likes-grid" class="results-grid poster-grid"></div>`
       : ""}`;
 
   document.getElementById("sift-with-friend")?.addEventListener("click", async (event) => {

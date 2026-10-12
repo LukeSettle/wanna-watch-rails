@@ -50,8 +50,14 @@ Rails.application.routes.draw do
   post 'stripe/webhook', to: 'stripe_webhooks#create'
 
   # In-app screens. Same shell as `/` so a refresh keeps the page,
-  # and the browser back gesture can return to home.
+  # and each screen is one step in browser history.
   get "configure", to: "web#show"
+  get "login", to: "web#show"
+  get "register", to: "web#show"
+  get "guest", to: "web#show"
+  get "reset", to: "web#show"
+  get "shop", to: "web#show"
+  get "play/:code", to: "web#show", constraints: { code: /[A-Za-z0-9]+/ }
   get "movies/friends/:id", to: "web#show", constraints: { id: /\d+/ }
   get "movies/friends", to: "web#show"
   get "movies/likes", to: "web#show"

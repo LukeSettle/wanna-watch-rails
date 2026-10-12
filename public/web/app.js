@@ -1,6 +1,7 @@
 // WannaWatch web client. Single-page app with no build step.
 // Screens: name -> home -> invite partner -> match (swiping) -> waiting -> results.
 // First-match games require a partner before swiping.
+// Home pushes /configure and /movies/* so the browser back gesture returns home.
 
 const state = {
   user: null,
@@ -24,6 +25,7 @@ const state = {
 let cable = null;
 let lastRenderKey = null;
 let ignoreClicksUntil = 0;
+let suppressPopstate = false;
 
 const app = document.getElementById("app");
 
@@ -107,6 +109,151 @@ function accountNudgeHtml(context = "home") {
       </div>
       <button type="button" class="btn btn-secondary" data-save-account>Create login</button>
     </section>`;
+}
+
+// ---------- browser history ----------
+// Custom game (/configure) and the movies library (/movies, /movies/likes,
+// /movies/friends, /movies/friends/:id) are real history entries. The system
+// back gesture and the on-screen Back buttons both return to home.
+
+function parseAppRoute(pathname = location.pathname) {
+  const path = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
+  if (path === "/configure") return { view: "create" };
+  const friend = path.match(/^\/movies\/friends\/(\d+)$/);
+  if (friend) {
+    return { view: "history", libraryTab: "friends", libraryFriendId: Number(friend[1]) };
+  }
+  if (path === "/movies/friends") {
+    return { view: "history", libraryTab: "friends", libraryFriendId: null };
+  }
+  if (path === "/movies/likes") {
+    return { view: "history", libraryTab: "likes", libraryFriendId: null };
+  }
+  if (path === "/movies") {
+    return { view: "history", libraryTab: "matches", libraryFriendId: null };
+  }
+  if (path === "/") return { view: "home" };
+  return null;
+}
+
+function appRoutePath() {
+  if (state.game) return null;
+  if (state.view === "create") return "/configure";
+  if (state.view === "history") {
+    if (state.libraryTab === "likes") return "/movies/likes";
+    if (state.libraryTab === "friends") {
+      return state.libraryFriendId
+        ? `/movies/friends/${state.libraryFriendId}`
+        : "/movies/friends";
+    }
+    return "/movies";
+  }
+  if (state.view === "home") return "/";
+  return null;
+}
+
+function writeAppRoute(mode) {
+  const path = appRoutePath();
+  if (!path) return;
+  const pushed = mode === "push" ? true : Boolean(history.state?.wwPushed);
+  const data = { ww: true, wwPushed: pushed };
+  if (mode === "push" && location.pathname !== path) history.pushState(data, "", path);
+  else history.replaceState(data, "", path);
+}
+
+function openAppRoute(view, { tab = "matches", friendId = null, mode = "push" } = {}) {
+  state.view = view;
+  if (view === "history") {
+    state.libraryTab = tab;
+    state.libraryFriendId = tab === "friends" ? friendId : null;
+  }
+  writeAppRoute(mode);
+  lastRenderKey = null;
+  window.scrollTo(0, 0);
+  render();
+}
+
+function returnToHome() {
+  if (history.state?.wwPushed) {
+    history.back();
+    return;
+  }
+  state.view = "home";
+  state.libraryFriendId = null;
+  history.replaceState({ ww: true, wwPushed: false }, "", "/");
+  lastRenderKey = null;
+  window.scrollTo(0, 0);
+  render();
+}
+
+// Drop a pushed screen when a game starts so back doesn't reopen the form
+// underneath an active game.
+function discardPushedRoute() {
+  if (history.state?.wwPushed) {
+    suppressPopstate = true;
+    history.back();
+    return;
+  }
+  if (location.pathname !== "/") {
+    history.replaceState({ ww: true, wwPushed: false }, "", "/");
+  }
+}
+
+function applyPoppedRoute() {
+  const route = parseAppRoute() || { view: "home" };
+  state.view = route.view;
+  if (route.view === "history") {
+    state.libraryTab = route.libraryTab;
+    state.libraryFriendId = route.libraryFriendId;
+  } else {
+    state.libraryFriendId = null;
+  }
+  lastRenderKey = null;
+  window.scrollTo(0, 0);
+  render();
+}
+
+function onAppPopstate() {
+  if (suppressPopstate) {
+    suppressPopstate = false;
+    return;
+  }
+  if (!state.user?.username) return;
+  // A game occupies the home history entry. Ignore a forward into a screen
+  // that was already left behind.
+  if (state.game) {
+    if (location.pathname !== "/") {
+      suppressPopstate = true;
+      history.back();
+    }
+    return;
+  }
+  applyPoppedRoute();
+}
+
+function seedRouteOnLoad(route) {
+  state.view = route.view;
+  if (route.view === "history") {
+    state.libraryTab = route.libraryTab;
+    state.libraryFriendId = route.libraryFriendId;
+  }
+  if (history.state?.ww) return;
+  const path = location.pathname.length > 1 ? location.pathname.replace(/\/+$/, "") : location.pathname;
+  history.replaceState({ ww: true, wwPushed: false }, "", "/");
+  history.pushState({ ww: true, wwPushed: true }, "", path);
+}
+
+function restoreViewFromRoute() {
+  const route = parseAppRoute();
+  if (route?.view === "create" || route?.view === "history") {
+    state.view = route.view;
+    if (route.view === "history") {
+      state.libraryTab = route.libraryTab;
+      state.libraryFriendId = route.libraryFriendId;
+    }
+    return;
+  }
+  state.view = "home";
 }
 
 function bindAccountNudge(root = document) {
@@ -199,14 +346,23 @@ function pendingEntryCode() {
 
 async function enterHome() {
   connectCable();
-  state.view = "home";
 
   const entryCode = pendingEntryCode();
   if (entryCode) {
-    history.replaceState({}, "", "/");
+    history.replaceState({ ww: true, wwPushed: false }, "", "/");
     const joined = await joinGameByCode(entryCode);
     if (joined) return;
   }
+
+  const route = parseAppRoute();
+  if (route && route.view !== "home") {
+    seedRouteOnLoad(route);
+  } else {
+    state.view = "home";
+    const keepSearch = location.pathname === "/" ? location.search : "";
+    history.replaceState({ ww: true, wwPushed: false }, "", `/${keepSearch}`);
+  }
+
   cable.subscribe({ channel: "UserGamesChannel" });
   render();
   refreshGamesList();
@@ -526,6 +682,8 @@ async function joinGameByCode(code) {
 }
 
 async function startGame(game) {
+  discardPushedRoute();
+  state.view = "home";
   state.game = game;
   state.movies = [];
   state.serverMessages = [];
@@ -555,6 +713,10 @@ function leaveGame() {
   state.movies = [];
   state.inviteGateCleared = false;
   state.view = "home";
+  state.libraryFriendId = null;
+  if (location.pathname !== "/") {
+    history.replaceState({ ww: true, wwPushed: false }, "", "/");
+  }
   cable.subscribe({ channel: "UserGamesChannel" });
   render();
   refreshGamesList();
@@ -859,8 +1021,18 @@ function screenName() {
   return "lobby";
 }
 
+function syncDocumentTitle(screen) {
+  if (screen === "create") document.title = "Custom game — WannaWatch";
+  else if (screen === "history") {
+    document.title = state.libraryTab === "friends"
+      ? "Friend matches — WannaWatch"
+      : "Your movies — WannaWatch";
+  } else document.title = "WannaWatch — Swipe movies with friends";
+}
+
 function render() {
   const screen = screenName();
+  syncDocumentTitle(screen);
   document.body.classList.toggle("lock-scroll", screen === "match");
   const key = renderKeyFor(screen);
   if (key === lastRenderKey) {
@@ -953,8 +1125,12 @@ function topBarHtml(subtitle) {
 
 function bindBrandHome() {
   document.getElementById("brand-home")?.addEventListener("click", () => {
-    if (state.game && !confirm("Leave this game and go home?")) return;
-    leaveGame();
+    if (state.game) {
+      if (!confirm("Leave this game and go home?")) return;
+      leaveGame();
+      return;
+    }
+    returnToHome();
   });
 }
 
@@ -1043,8 +1219,11 @@ function renderLoginScreen() {
   });
 
   document.getElementById("back-to-name").addEventListener("click", () => {
-    state.view = state.user?.username ? "home" : "register";
-    render();
+    if (state.user?.username) returnToHome();
+    else {
+      state.view = "register";
+      render();
+    }
   });
 }
 
@@ -1102,9 +1281,7 @@ function renderRegisterScreen() {
       await enterHome();
     } else {
       toast("Account saved — you can log in anywhere now!");
-      state.view = "home";
-      lastRenderKey = null;
-      render();
+      returnToHome();
     }
   });
 
@@ -1119,8 +1296,7 @@ function renderRegisterScreen() {
   });
 
   document.getElementById("back-home")?.addEventListener("click", () => {
-    state.view = "home";
-    render();
+    returnToHome();
   });
 }
 
@@ -1227,8 +1403,7 @@ function renderHomeScreen() {
   });
 
   document.getElementById("create-game").addEventListener("click", () => {
-    state.view = "create";
-    render();
+    openAppRoute("create");
   });
 
   document.getElementById("open-shop")?.addEventListener("click", () => {
@@ -1251,8 +1426,7 @@ function renderHomeScreen() {
   });
 
   document.getElementById("view-history").addEventListener("click", () => {
-    state.view = "history";
-    render();
+    openAppRoute("history", { tab: "matches" });
   });
 
   document.getElementById("save-settings")?.addEventListener("click", async () => {
@@ -1331,8 +1505,7 @@ async function renderHomeLibraryPreview() {
       <p class="muted">No likes yet. After you swipe, your movies will show up here.</p>
       <button type="button" class="btn btn-secondary btn-small" id="home-library-empty-cta">Open your movies</button>`;
     preview.querySelector("#home-library-empty-cta")?.addEventListener("click", () => {
-      state.view = "history";
-      render();
+      openAppRoute("history", { tab: "matches" });
     });
     return;
   }
@@ -1459,10 +1632,7 @@ function lastPlayedLabel(timestamp) {
 }
 
 function openFriendLikes(friendId) {
-  state.libraryTab = "friends";
-  state.libraryFriendId = friendId;
-  state.view = "history";
-  render();
+  openAppRoute("history", { tab: "friends", friendId });
 }
 
 async function removeFriend(friendId) {
@@ -1855,8 +2025,7 @@ async function renderCreateScreen() {
   });
 
   document.getElementById("cancel-create").addEventListener("click", () => {
-    state.view = "home";
-    render();
+    returnToHome();
   });
 
   document.getElementById("create-form").addEventListener("submit", async (event) => {
@@ -3416,15 +3585,16 @@ async function renderHistoryScreen() {
   renderSettledBanner();
 
   document.getElementById("back-home").addEventListener("click", () => {
-    state.view = "home";
-    render();
+    returnToHome();
   });
 
   document.querySelectorAll("[data-lib-tab]").forEach((button) => {
     button.addEventListener("click", () => {
       state.libraryTab = button.dataset.libTab;
       if (state.libraryTab !== "friends") state.libraryFriendId = null;
-      renderHistoryScreen();
+      writeAppRoute("replace");
+      lastRenderKey = null;
+      render();
     });
   });
 
@@ -3597,6 +3767,7 @@ async function renderLibraryFriends(container) {
 
   document.getElementById("library-friend").addEventListener("change", (event) => {
     state.libraryFriendId = event.target.value ? Number(event.target.value) : null;
+    writeAppRoute("replace");
     renderLibraryFriends(container);
   });
 
@@ -3772,6 +3943,8 @@ async function fillLibraryGrid(grid, items) {
     bindMatchActions(card, movie);
   });
 }
+
+window.addEventListener("popstate", onAppPopstate);
 
 boot();
 

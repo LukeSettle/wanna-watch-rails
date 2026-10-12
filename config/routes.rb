@@ -48,6 +48,14 @@ Rails.application.routes.draw do
   post 'shop/confirm', to: 'shop#confirm'
   post 'stripe/webhook', to: 'stripe_webhooks#create'
 
+  # In-app screens. Same shell as `/` so a refresh keeps the page,
+  # and the browser back gesture can return to home.
+  get "configure", to: "web#show"
+  get "movies/friends/:id", to: "web#show", constraints: { id: /\d+/ }
+  get "movies/friends", to: "web#show"
+  get "movies/likes", to: "web#show"
+  get "movies", to: "web#show"
+
   get 'home', to: 'application#home'
   get 'about', to: 'pages#about'
   get 'how-it-works', to: 'pages#how_it_works'

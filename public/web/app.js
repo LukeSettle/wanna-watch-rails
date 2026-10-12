@@ -530,6 +530,7 @@ async function startGame(game) {
   state.movies = [];
   state.serverMessages = [];
   state.noMoreMovies = false;
+  emptyFetchRetries = 0;
   state.finishedSent = false;
   state.lastSwipe = null;
   state.finalMatchKey = null;
@@ -644,6 +645,8 @@ async function keepPlaying() {
 
 // ---------- movies ----------
 
+let emptyFetchRetries = 0;
+
 async function fetchMovies() {
   if (!state.game || state.fetchingMovies) return;
   state.fetchingMovies = true;
@@ -661,8 +664,17 @@ async function fetchMovies() {
       state.movies.push({ ...movie, hidden: swiped.has(key) });
       added += 1;
     });
-    if (added === 0 && unswipedMovies().length === 0) {
-      state.noMoreMovies = true;
+    if (added > 0) {
+      emptyFetchRetries = 0;
+    } else if (unswipedMovies().length === 0) {
+      // The server digs deeper into the catalog on every request, so an empty
+      // batch in a continuous game is usually just a slow round — try again.
+      if (isContinuous() && emptyFetchRetries < 3) {
+        emptyFetchRetries += 1;
+        setTimeout(fetchMovies, 1000);
+      } else {
+        state.noMoreMovies = true;
+      }
     }
   } catch (error) {
     console.error(error);
@@ -733,7 +745,14 @@ function unswipedMovies() {
   return state.movies.filter((m) => !m.hidden);
 }
 
-function recordSwipe(movie, liked, { deferFinish } = {}) {
+// Already-watched titles leave the deck and go into the user's taste profile
+// as a like or dislike, but never count toward a game match.
+function reportWatched(movie, liked) {
+  backend.markWatched(state.game.id, state.user.id, movie.id, liked, movie.media_type || "movie")
+    .catch(() => toast("Couldn't save that rating — try again later."));
+}
+
+function recordSwipe(movie, liked, { deferFinish, watched } = {}) {
   movie.hidden = true;
   const key = titleKey(movie);
 
@@ -741,18 +760,20 @@ function recordSwipe(movie, liked, { deferFinish } = {}) {
   swiped.add(key);
   saveJSON(swipedIdsKey(), [...swiped]);
 
-  if (liked) {
+  if (liked && !watched) {
     const likedIds = new Set(normalizeMediaKeyList(likedMovieIds()));
     likedIds.add(key);
     saveJSON(likedIdsKey(), [...likedIds]);
   }
 
-  state.lastSwipe = { movie, liked, key };
+  state.lastSwipe = { movie, liked, key, watched };
   updateUndoButton();
   maybeShowSwipeAdBreak();
 
+  if (watched) reportWatched(movie, liked);
+
   if (isContinuous()) {
-    reportSwipe(movie, liked);
+    if (!watched) reportSwipe(movie, liked);
     updateDeckCounter();
     revealNextCard();
     maybeShowFunMessages();
@@ -777,14 +798,14 @@ async function undoLastSwipe() {
   const last = state.lastSwipe;
   if (!last || !state.game || state.finishedSent || state.game.finished_at) return;
 
-  const { movie, liked, key } = last;
+  const { movie, liked, key, watched } = last;
   state.lastSwipe = null;
   movie.hidden = false;
 
   const swiped = normalizeMediaKeyList(loadJSON(swipedIdsKey(), [])).filter((id) => id !== key);
   saveJSON(swipedIdsKey(), swiped);
 
-  if (liked) {
+  if (liked && !watched) {
     const likedIds = normalizeMediaKeyList(likedMovieIds()).filter((id) => id !== key);
     saveJSON(likedIdsKey(), likedIds);
   }
@@ -796,7 +817,7 @@ async function undoLastSwipe() {
   });
   saveJSON(storageKey("pending_swipes"), pending);
 
-  if (isContinuous()) {
+  if (isContinuous() || watched) {
     try {
       await backend.undoSwipe(state.game.id, state.user.id, movie.id, movie.media_type || "movie");
     } catch {
@@ -1534,6 +1555,7 @@ async function renderCreateScreen() {
   ];
   const vibePresets = [
     { label: "Surprise me", genres: [], rating: 0, era: "Any time", favorPopular: false, includeKids: false },
+    { label: "Picked for us", genres: [], rating: 0, era: "Any time", favorPopular: false, includeKids: false, forYou: true },
     { label: "Crowd favorites", genres: [], rating: 6, era: "Any time", favorPopular: true, includeKids: false },
     { label: "Date night", genres: [10749, 35, 18], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
     { label: "Laugh out loud", genres: [35], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
@@ -1660,7 +1682,7 @@ async function renderCreateScreen() {
         <section class="card form-card">
           <div class="field-block">
             <label>What's the vibe?</label>
-            <p class="hint">One tap sets the mood — tweak below after.</p>
+            <p class="hint">One tap sets the mood — tweak below after. “Picked for us” builds the deck from what everyone in the game has liked before.</p>
             <div class="chips single" id="vibe-chips">
               ${vibePresets.map((v, i) => `<button type="button" class="chip ${i === 0 ? "selected" : ""}" data-vibe="${i}">${esc(v.label)}</button>`).join("")}
             </div>
@@ -1868,6 +1890,7 @@ async function renderCreateScreen() {
       mediaType,
       includeKids: includeKidsChip?.classList.contains("selected") || false,
       favorPopular: favorPopularChip?.classList.contains("selected") || false,
+      forYou: Boolean(vibePresets[Number(document.querySelector("#vibe-chips .chip.selected")?.dataset.vibe)]?.forYou),
     };
 
     const submit = document.getElementById("create-submit");
@@ -2696,21 +2719,50 @@ function renderMatchScreen() {
         <span class="muted">tap card for details</span>
       </div>
       <div class="deck" id="deck"></div>
-      <div class="swipe-actions">
-        <button class="action-btn nope" id="nope-button" aria-label="Nope">✕</button>
-        <button class="action-btn undo" id="undo-button" aria-label="Undo last swipe" disabled>↶</button>
-        <button class="action-btn like" id="like-button" aria-label="Like">♥</button>
-      </div>
+      ${swipeActionsHtml()}
     </div>`;
 
   bindBrandHome();
   buildDeckDom();
   attachDeckGestures(document.getElementById("deck"));
-  updateUndoButton();
+  bindSwipeActions();
+}
 
+function swipeActionsHtml() {
+  return `
+    <div class="swipe-actions">
+      <button class="action-btn nope" id="nope-button" aria-label="Nope">✕</button>
+      <button class="action-btn undo" id="undo-button" aria-label="Undo last swipe" disabled>↶</button>
+      <button class="action-btn seen" id="seen-button" aria-label="Already watched">
+        <span class="seen-icon">✓</span><span class="seen-label">Seen it</span>
+      </button>
+      <button class="action-btn like" id="like-button" aria-label="Like">♥</button>
+    </div>
+    <div class="seen-prompt" id="seen-prompt" hidden>
+      <p><strong>Already watched it?</strong><span class="muted">Your rating teaches us what you like.</span></p>
+      <div class="seen-prompt-actions">
+        <button type="button" class="btn btn-secondary" data-seen-rating="dislike">👎 Not for me</button>
+        <button type="button" class="btn btn-primary" data-seen-rating="like">👍 Liked it</button>
+      </div>
+      <button type="button" class="link" data-seen-rating="cancel">Cancel</button>
+    </div>`;
+}
+
+function bindSwipeActions() {
+  updateUndoButton();
   document.getElementById("nope-button").addEventListener("click", () => swipeTopCard(false));
   document.getElementById("undo-button").addEventListener("click", () => undoLastSwipe());
   document.getElementById("like-button").addEventListener("click", () => swipeTopCard(true));
+  document.getElementById("seen-button").addEventListener("click", () => {
+    document.getElementById("seen-prompt").hidden = false;
+  });
+  document.querySelectorAll("[data-seen-rating]").forEach((button) => {
+    button.addEventListener("click", () => {
+      document.getElementById("seen-prompt").hidden = true;
+      const rating = button.dataset.seenRating;
+      if (rating !== "cancel") markTopCardWatched(rating === "like");
+    });
+  });
 }
 
 function renderContinuousMatchScreen() {
@@ -2760,26 +2812,19 @@ function renderContinuousMatchScreen() {
           : `<button type="button" class="meta-pill" id="invite-pill">+ Invite</button>`}
       </div>
       <div class="deck" id="deck"></div>
-      <div class="swipe-actions">
-        <button class="action-btn nope" id="nope-button" aria-label="Nope">✕</button>
-        <button class="action-btn undo" id="undo-button" aria-label="Undo last swipe" disabled>↶</button>
-        <button class="action-btn like" id="like-button" aria-label="Like">♥</button>
-      </div>
+      ${swipeActionsHtml()}
     </div>`;
 
   bindBrandHome();
   buildDeckDom();
   attachDeckGestures(document.getElementById("deck"));
-  updateUndoButton();
+  bindSwipeActions();
 
   document.getElementById("matches-pill")?.addEventListener("click", showMatchesModal);
   document.getElementById("invite-pill")?.addEventListener("click", async () => {
     await navigator.clipboard.writeText(shareLink());
     toast("Invite link copied — anyone can join and swipe on their own time!");
   });
-  document.getElementById("nope-button").addEventListener("click", () => swipeTopCard(false));
-  document.getElementById("undo-button").addEventListener("click", () => undoLastSwipe());
-  document.getElementById("like-button").addEventListener("click", () => swipeTopCard(true));
 }
 
 // ---------- first-match celebration ----------
@@ -2848,6 +2893,7 @@ function movieCardHtml(movie) {
     <div class="movie-card" data-id="${movie.id}" data-media="${media}">
       <div class="stamp stamp-like">LIKE</div>
       <div class="stamp stamp-nope">NOPE</div>
+      <div class="stamp stamp-seen">SEEN IT</div>
       ${poster
         ? `<img class="poster" src="${poster}" alt="${esc(movie.title)}" draggable="false">`
         : `<div class="poster poster-missing">${esc(movie.title)}</div>`}
@@ -3084,13 +3130,18 @@ function attachDeckGestures(deck) {
   deck.addEventListener("pointercancel", release);
 }
 
-function flyOut(card, liked, movie) {
+function flyOut(card, liked, movie, { watched = false } = {}) {
   const lastCard = !isContinuous() && unswipedMovies().length <= 1;
-  const exitX = (liked ? 1 : -1) * Math.max(window.innerWidth, 480);
   card.classList.add("flying");
-  card.style.transform = `translate(${exitX}px, -30px) rotate(${liked ? 30 : -30}deg)`;
-  card.querySelector(liked ? ".stamp-like" : ".stamp-nope").style.opacity = 1;
-  recordSwipe(movie, liked, { deferFinish: lastCard });
+  if (watched) {
+    card.style.transform = `translate(0, -${Math.max(window.innerHeight, 640)}px) scale(0.9)`;
+    card.querySelector(".stamp-seen").style.opacity = 1;
+  } else {
+    const exitX = (liked ? 1 : -1) * Math.max(window.innerWidth, 480);
+    card.style.transform = `translate(${exitX}px, -30px) rotate(${liked ? 30 : -30}deg)`;
+    card.querySelector(liked ? ".stamp-like" : ".stamp-nope").style.opacity = 1;
+  }
+  recordSwipe(movie, liked, { deferFinish: lastCard, watched });
   setTimeout(() => {
     card.remove();
     if (lastCard) {
@@ -3107,6 +3158,14 @@ function swipeTopCard(liked) {
   const card = topCardEl(deck);
   if (!card) return;
   flyOut(card, liked, movieForCard(card));
+}
+
+function markTopCardWatched(liked) {
+  const deck = document.getElementById("deck");
+  const card = deck && topCardEl(deck);
+  if (!card) return;
+  flyOut(card, liked, movieForCard(card), { watched: true });
+  toast(liked ? "Added to your likes — we'll find more like it." : "Got it — we'll steer away from that.");
 }
 
 document.addEventListener("keydown", (event) => {
@@ -3300,6 +3359,18 @@ function buildLibraryFromGames(games) {
   return { myLikes: sortMyLikes, matches: sortMatches };
 }
 
+// Titles rated "already watched + liked" join the game likes.
+function withWatchedLikes(myLikes, ratings) {
+  const entries = new Map(myLikes);
+  ratings.filter((r) => r.watched && r.liked).forEach((rating) => {
+    const entry = entries.get(rating.media_key) || {
+      count: 0, with: new Set(), lastAt: Date.parse(rating.updated_at) || 0,
+    };
+    entries.set(rating.media_key, { ...entry, watched: true });
+  });
+  return [...entries.entries()].sort((a, b) => (b[1].lastAt || 0) - (a[1].lastAt || 0));
+}
+
 function capLibraryEntries(entries) {
   if (isPlus() || !entries?.length) return { visible: entries || [], total: entries?.length || 0, capped: false };
   const total = entries.length;
@@ -3371,7 +3442,8 @@ async function renderHistoryScreen() {
   if (state.libraryTab === "matches") {
     await renderLibraryMatches(container, library.matches);
   } else if (state.libraryTab === "likes") {
-    await renderLibraryLikes(container, library.myLikes);
+    const ratings = await backend.movieRatings(state.user.id).catch(() => []);
+    await renderLibraryLikes(container, withWatchedLikes(library.myLikes, ratings));
   } else {
     await renderLibraryFriends(container);
   }
@@ -3453,7 +3525,7 @@ async function renderLibraryMatches(container, matchEntries) {
 
 async function renderLibraryLikes(container, likeEntries) {
   if (likeEntries.length === 0) {
-    container.innerHTML = `<p class="muted">No likes yet — swipe right in a game and they’ll show up here.</p>`;
+    container.innerHTML = `<p class="muted">No likes yet — swipe right in a game (or rate one you’ve already seen) and they’ll show up here.</p>`;
     return;
   }
 
@@ -3486,7 +3558,9 @@ async function renderLibraryLikes(container, likeEntries) {
       key,
       subtitle: meta.with.size
         ? `Also liked with ${[...meta.with].join(", ")}`
-        : `Liked in ${meta.count} game${meta.count === 1 ? "" : "s"}`,
+        : meta.count
+          ? `Liked in ${meta.count} game${meta.count === 1 ? "" : "s"}`
+          : "Watched it · liked it",
       withNames: [...meta.with].join(", "),
       showSettle: true,
     }))

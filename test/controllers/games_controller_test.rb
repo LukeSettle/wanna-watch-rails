@@ -63,6 +63,40 @@ class GamesControllerTest < ActionDispatch::IntegrationTest
     assert_not_includes player.liked_movie_ids, "movie:550"
   end
 
+  test "swipes build the user's taste profile and undo removes the rating" do
+    @game.update!(mode: "endless", deck: [{ "id" => 550, "media_type" => "movie", "genre_ids" => [18] }])
+    players(:one).update!(liked_movie_ids: [], seen_movie_ids: [])
+
+    post swipe_game_url(@game), params: { user_id: @owner.id, movie_id: 550, liked: true }, as: :json
+
+    rating = MovieRating.find_by!(user: @owner, media_key: "movie:550")
+    assert rating.liked
+    assert_equal [18], rating.genre_ids
+
+    post undo_swipe_game_url(@game), params: { user_id: @owner.id, movie_id: 550 }, as: :json
+    assert_not MovieRating.exists?(user: @owner, media_key: "movie:550")
+  end
+
+  test "watched removes the title from the deck without counting as a game like" do
+    player = players(:one)
+    player.update!(liked_movie_ids: [], seen_movie_ids: [])
+
+    post watched_game_url(@game), params: { user_id: @owner.id, movie_id: 680, liked: true }, as: :json
+
+    assert_response :success
+    player.reload
+    assert_includes player.seen_movie_ids, "movie:680"
+    assert_not_includes player.liked_movie_ids, "movie:680"
+    rating = MovieRating.find_by!(user: @owner, media_key: "movie:680")
+    assert rating.watched
+    assert rating.liked
+
+    post finish_matching_game_url(@game), params: {
+      user_id: @owner.id, liked_movie_ids: [], seen_movie_ids: ["movie:680"]
+    }, as: :json
+    assert rating.reload.liked
+  end
+
   test "tv swipe uses tv media key so ids do not collide" do
     @game.update!(mode: "endless", finished_at: nil)
     player = players(:one)

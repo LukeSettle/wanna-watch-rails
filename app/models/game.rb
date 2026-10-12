@@ -66,6 +66,20 @@ class Game < ApplicationRecord
       liked_movie_ids: liked,
       seen_movie_ids: (player.seen_movie_ids.to_a + seen).uniq
     )
+    (liked | seen).each { |key| record_swipe(user, key, liked: liked.include?(key)) }
+  end
+
+  def record_swipe(user, key, liked:)
+    MovieRating.record_swipe(user, key, liked: liked, genre_ids: genre_ids_for(key))
+  end
+
+  def record_watched(user, key, liked:)
+    MovieRating.record_watched(user, key, liked: liked, genre_ids: genre_ids_for(key))
+  end
+
+  def genre_ids_for(key)
+    movie = deck.to_a.find { |m| MediaKey.for(m) == key }
+    movie ? movie["genre_ids"].to_a.map(&:to_i) : []
   end
 end
 

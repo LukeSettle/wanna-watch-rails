@@ -161,6 +161,21 @@ const backend = {
       },
     });
   },
+  markWatched(gameId, userId, movieId, liked, mediaType = "movie") {
+    return backendRequest(`/games/${gameId}/watched`, {
+      method: "POST",
+      body: {
+        user_id: userId,
+        movie_id: movieId,
+        media_type: mediaType || "movie",
+        media_key: mediaKey(movieId, mediaType),
+        liked,
+      },
+    });
+  },
+  movieRatings(userId) {
+    return backendRequest(`/users/movie_ratings?user_id=${userId}`);
+  },
   undoSwipe(gameId, userId, movieId, mediaType = "movie") {
     return backendRequest(`/games/${gameId}/undo_swipe`, {
       method: "POST",
@@ -342,6 +357,10 @@ function buildDiscoverQuery(values) {
   if (values.favorPopular) {
     params.favor_popular = "true";
     params["vote_count.gte"] = 500;
+  }
+
+  if (values.forYou) {
+    params.ww_for_you = "true";
   }
 
   const genreIds = (values.genres || []).map(Number);

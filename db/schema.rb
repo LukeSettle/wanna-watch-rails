@@ -54,6 +54,19 @@ ActiveRecord::Schema[7.1].define(version: 2026_10_12_010000) do
     t.index ["user_id"], name: "index_games_on_user_id"
   end
 
+  create_table "movie_ratings", force: :cascade do |t|
+    t.bigint "user_id", null: false
+    t.string "media_key", null: false
+    t.boolean "liked", null: false
+    t.boolean "watched", default: false, null: false
+    t.integer "genre_ids", default: [], array: true
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["user_id", "liked", "updated_at"], name: "index_movie_ratings_on_user_id_and_liked_and_updated_at"
+    t.index ["user_id", "media_key"], name: "index_movie_ratings_on_user_id_and_media_key", unique: true
+    t.index ["user_id"], name: "index_movie_ratings_on_user_id"
+  end
+
   create_table "players", force: :cascade do |t|
     t.datetime "finished_at"
     t.datetime "ready_at"
@@ -111,6 +124,7 @@ ActiveRecord::Schema[7.1].define(version: 2026_10_12_010000) do
   add_foreign_key "game_invites", "users", column: "invitee_id"
   add_foreign_key "game_invites", "users", column: "inviter_id"
   add_foreign_key "games", "users"
+  add_foreign_key "movie_ratings", "users"
   add_foreign_key "players", "games"
   add_foreign_key "players", "users"
   add_foreign_key "purchases", "users"

@@ -3317,9 +3317,11 @@ function movieCardHtml(movie) {
       <div class="stamp stamp-like">LIKE</div>
       <div class="stamp stamp-nope">NOPE</div>
       <div class="stamp stamp-seen">SEEN IT</div>
-      ${poster
-        ? `<img class="poster" src="${poster}" alt="${esc(movie.title)}" draggable="false">`
-        : `<div class="poster poster-missing">${esc(movie.title)}</div>`}
+      <div class="poster-frame">
+        ${poster
+          ? `<img class="poster" src="${poster}" alt="${esc(movie.title)}" draggable="false">`
+          : `<div class="poster poster-missing">${esc(movie.title)}</div>`}
+      </div>
       <div class="card-caption">
         <div class="card-title-row">
           <strong>${esc(movie.title)}</strong>

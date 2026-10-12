@@ -1979,6 +1979,20 @@ button.game-row {
   gap: 16px;
 }
 
+.library-page-status,
+.library-more {
+  grid-column: 1 / -1;
+}
+
+.library-more-label {
+  text-align: center;
+  margin: 4px 0 8px;
+}
+
+.library-sentinel {
+  height: 1px;
+}
+
 .results-grid .match-actions.compact {
   display: flex;
   flex-wrap: nowrap;

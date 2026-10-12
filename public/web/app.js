@@ -1038,7 +1038,7 @@ async function createGame(values) {
     query: JSON.stringify(query),
     user_id: state.user.id,
     providers: values.providers,
-    mode: values.mode || "classic",
+    mode: values.mode || "first_match",
   });
   startGame(game);
 }
@@ -1995,15 +1995,15 @@ async function renderCreateScreen() {
     { label: "Classics", from: 1950, to: 1979 },
   ];
   const vibePresets = [
-    { mark: "01", label: "Surprise me", blurb: "No rules. Let the reel pick.", genres: [], rating: 0, era: "Any time", favorPopular: false, includeKids: false },
-    { mark: "02", label: "Picked for us", blurb: "Shaped by what you've loved.", genres: [], rating: 0, era: "Any time", favorPopular: false, includeKids: false, forYou: true },
-    { mark: "03", label: "Crowd favorites", blurb: "The titles everyone knows.", genres: [], rating: 6, era: "Any time", favorPopular: true, includeKids: false },
-    { mark: "04", label: "Date night", blurb: "Romance, warmth, a little laugh.", genres: [10749, 35, 18], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
-    { mark: "05", label: "Laugh out loud", blurb: "Comedies worth sharing a couch for.", genres: [35], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
-    { mark: "06", label: "Edge of your seat", blurb: "Thrillers, mysteries, and chills.", genres: [53, 27, 9648, 80], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
-    { mark: "07", label: "Family night", blurb: "Something the whole row can watch.", genres: [10751, 16, 12], rating: 6, era: "Any time", favorPopular: false, includeKids: true },
-    { mark: "08", label: "Critically acclaimed", blurb: "High scores, lasting aftertaste.", genres: [], rating: 8, era: "Any time", favorPopular: false, includeKids: false },
-    { mark: "09", label: "Throwback", blurb: "A double feature from the 80s and 90s.", genres: [], rating: 7, era: "80s & 90s", favorPopular: false, includeKids: false },
+    { label: "Surprise me", blurb: "No rules. Let the reel pick.", genres: [], rating: 0, era: "Any time", favorPopular: false, includeKids: false },
+    { label: "Picked for us", blurb: "Shaped by what you've loved.", genres: [], rating: 0, era: "Any time", favorPopular: false, includeKids: false, forYou: true },
+    { label: "Crowd favorites", blurb: "The titles everyone knows.", genres: [], rating: 6, era: "Any time", favorPopular: true, includeKids: false },
+    { label: "Date night", blurb: "Romance, warmth, a little laugh.", genres: [10749, 35, 18], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
+    { label: "Laugh out loud", blurb: "Comedies worth sharing a couch for.", genres: [35], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
+    { label: "Edge of your seat", blurb: "Thrillers, mysteries, and chills.", genres: [53, 27, 9648, 80], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
+    { label: "Family night", blurb: "Something the whole row can watch.", genres: [10751, 16, 12], rating: 6, era: "Any time", favorPopular: false, includeKids: true },
+    { label: "Critically acclaimed", blurb: "High scores, lasting aftertaste.", genres: [], rating: 8, era: "Any time", favorPopular: false, includeKids: false },
+    { label: "Throwback", blurb: "A double feature from the 80s and 90s.", genres: [], rating: 7, era: "80s & 90s", favorPopular: false, includeKids: false },
   ];
   const ratingPresets = [
     { label: "Any rating", min: 0 },
@@ -2114,35 +2114,49 @@ async function renderCreateScreen() {
               <strong>Endless</strong>
               <span>Keep swiping on your own time; get alerted on every match.</span>
             </button>
-            <button type="button" class="mode-option" data-mode="classic">
-              <strong>Classic</strong>
-              <span>Same 20 titles for everyone, then compare.</span>
-            </button>
           </div>
         </section>
 
         <section class="card form-card">
           <div class="field-block">
             <label>What's the mood?</label>
-            <p class="hint">One choice sets the night. “Picked for us” builds the deck from titles you've already liked.</p>
+            <p class="hint">${isPlus()
+              ? "One choice sets the night. “Picked for us” builds the deck from titles you've already liked."
+              : "One choice sets the night. “Picked for us” is included with WannaWatch+."}</p>
             <div class="vibe-grid" id="vibe-chips">
-              ${vibePresets.map((v, i) => `
-                <button type="button" class="chip vibe-card ${i === 0 ? "selected" : ""}" data-vibe="${i}">
-                  <span class="vibe-mark">${v.mark}</span>
+              ${vibePresets.map((v, i) => {
+                const locked = v.forYou && !isPlus();
+                return `
+                <button type="button" class="chip vibe-card ${i === 0 ? "selected" : ""} ${locked ? "vibe-locked" : ""}" data-vibe="${i}" ${locked ? 'aria-label="Picked for us. Requires WannaWatch+."' : ""}>
                   <span class="vibe-copy">
                     <strong>${esc(v.label)}</strong>
                     <span>${esc(v.blurb)}</span>
                   </span>
-                </button>`).join("")}
+                  ${locked ? `<span class="vibe-lock">WannaWatch+</span>` : ""}
+                </button>`;
+              }).join("")}
             </div>
           </div>
 
           <div class="field-block">
-            <label>Movies or TV?</label>
-            <div class="chips segmented single" id="media-chips">
-              <button type="button" class="chip selected" data-value="movie">Movies</button>
-              <button type="button" class="chip" data-value="tv">TV shows</button>
-              <button type="button" class="chip" data-value="both">Both</button>
+            <label id="media-label">Movies or TV?</label>
+            <div class="media-venn" id="media-venn" data-value="movie">
+              <div class="media-venn-stage" id="media-venn-stage">
+                <div class="media-venn-circle media-venn-movies"></div>
+                <div class="media-venn-circle media-venn-tv"></div>
+                <div class="media-venn-lens" id="media-venn-lens" hidden></div>
+                <span class="media-venn-label media-venn-label-movies">Movies</span>
+                <span class="media-venn-label media-venn-label-tv is-dim">TV</span>
+              </div>
+              <div class="media-slider">
+                <input type="range" id="media-slider" min="0" max="2" step="1" value="0" aria-labelledby="media-label" aria-valuetext="Movies">
+                <div class="media-slider-stops" aria-hidden="true">
+                  <span>Movies</span>
+                  <span>Both</span>
+                  <span>TV</span>
+                </div>
+              </div>
+              <p class="hint media-venn-caption" id="media-caption">Just movies</p>
             </div>
           </div>
 
@@ -2203,9 +2217,14 @@ async function renderCreateScreen() {
   document.getElementById("vibe-chips").addEventListener("click", (event) => {
     const chip = event.target.closest(".chip");
     if (!chip) return;
+    const vibe = vibePresets[Number(chip.dataset.vibe)];
+    if (vibe?.forYou && !isPlus()) {
+      openPlusShop();
+      return;
+    }
     document.querySelectorAll("#vibe-chips .chip").forEach((el) => el.classList.remove("selected"));
     chip.classList.add("selected");
-    applyVibe(vibePresets[Number(chip.dataset.vibe)]);
+    applyVibe(vibe);
   });
 
   const toggleMulti = (containerId) => {
@@ -2241,23 +2260,154 @@ async function renderCreateScreen() {
   toggleMulti("provider-chips");
   toggleMulti("genre-chips");
   toggleMulti("language-chips");
-  selectOne("media-chips");
   selectOne("rating-chips");
   selectOne("runtime-chips");
 
   favorPopularChip?.addEventListener("click", () => favorPopularChip.classList.toggle("selected"));
   includeKidsChip?.addEventListener("click", () => includeKidsChip.classList.toggle("selected"));
 
+  const mediaValues = ["movie", "both", "tv"];
+  const mediaCaptions = ["Just movies", "Movies and TV", "Just TV"];
+  const mediaAria = ["Movies", "Movies and TV", "TV shows"];
+
+  function selectedMediaType() {
+    return document.getElementById("media-venn")?.dataset.value || "movie";
+  }
+
   const syncRuntimeVisibility = () => {
-    const media = document.querySelector("#media-chips .chip.selected")?.dataset.value || "movie";
     const block = document.getElementById("runtime-block");
-    if (block) block.hidden = media === "tv";
+    if (block) block.hidden = selectedMediaType() === "tv";
   };
-  document.getElementById("media-chips").addEventListener("click", () => {
-    syncRuntimeVisibility();
-    loadGenresForMedia();
-  });
-  syncRuntimeVisibility();
+
+  function bindMediaVenn() {
+    const root = document.getElementById("media-venn");
+    const stage = document.getElementById("media-venn-stage");
+    const lens = document.getElementById("media-venn-lens");
+    const slider = document.getElementById("media-slider");
+    const caption = document.getElementById("media-caption");
+    const moviesEl = stage?.querySelector(".media-venn-movies");
+    const tvEl = stage?.querySelector(".media-venn-tv");
+    const moviesLabel = stage?.querySelector(".media-venn-label-movies");
+    const tvLabel = stage?.querySelector(".media-venn-label-tv");
+    if (!root || !stage || !lens || !slider || !moviesEl || !tvEl) return;
+
+    const measure = (el, pad) => {
+      const stageRect = stage.getBoundingClientRect();
+      const rect = el.getBoundingClientRect();
+      const scale = stage.offsetWidth ? stageRect.width / stage.offsetWidth : 1;
+      return {
+        left: (rect.left - stageRect.left) / scale - pad,
+        top: (rect.top - stageRect.top) / scale - pad,
+        width: rect.width / scale + pad * 2,
+        height: rect.height / scale + pad * 2,
+      };
+    };
+
+    const lerp = (a, b, t) => a + (b - a) * t;
+    const lerpBox = (a, b, t) => ({
+      left: lerp(a.left, b.left, t),
+      top: lerp(a.top, b.top, t),
+      width: lerp(a.width, b.width, t),
+      height: lerp(a.height, b.height, t),
+    });
+
+    // The highlight starts on the movies circle, widens across both, then settles on TV.
+    const positionLens = (t) => {
+      const pad = 5;
+      const movieBox = measure(moviesEl, pad);
+      const tvBox = measure(tvEl, pad);
+      if (!movieBox.width || !tvBox.width) return;
+      const bothBox = {
+        left: Math.min(movieBox.left, tvBox.left),
+        top: Math.min(movieBox.top, tvBox.top),
+        width: Math.max(movieBox.left + movieBox.width, tvBox.left + tvBox.width) - Math.min(movieBox.left, tvBox.left),
+        height: Math.max(movieBox.top + movieBox.height, tvBox.top + tvBox.height) - Math.min(movieBox.top, tvBox.top),
+      };
+      const clamped = Math.max(0, Math.min(2, t));
+      const box = clamped <= 1 ? lerpBox(movieBox, bothBox, clamped) : lerpBox(bothBox, tvBox, clamped - 1);
+      lens.hidden = false;
+      lens.style.left = `${box.left}px`;
+      lens.style.top = `${box.top}px`;
+      lens.style.width = `${box.width}px`;
+      lens.style.height = `${box.height}px`;
+    };
+
+    const paintLabels = (index) => {
+      moviesLabel?.classList.toggle("is-dim", index === 2);
+      tvLabel?.classList.toggle("is-dim", index === 0);
+    };
+
+    const commitMedia = (index) => {
+      const nextIndex = Math.max(0, Math.min(2, index));
+      const next = mediaValues[nextIndex];
+      const changed = root.dataset.value !== next;
+      root.dataset.value = next;
+      slider.value = String(nextIndex);
+      slider.setAttribute("aria-valuetext", mediaAria[nextIndex]);
+      if (caption) caption.textContent = mediaCaptions[nextIndex];
+      paintLabels(nextIndex);
+      const wasDragging = stage.classList.contains("is-dragging");
+      stage.classList.remove("is-dragging");
+      if (wasDragging) requestAnimationFrame(() => positionLens(nextIndex));
+      else positionLens(nextIndex);
+      if (!changed) return;
+      syncRuntimeVisibility();
+      loadGenresForMedia();
+    };
+
+    const indexFromClientX = (clientX) => {
+      const movies = moviesEl.getBoundingClientRect();
+      const tv = tvEl.getBoundingClientRect();
+      const inMovies = clientX >= movies.left && clientX <= movies.right;
+      const inTv = clientX >= tv.left && clientX <= tv.right;
+      if (inMovies && inTv) return 1;
+      if (inMovies) return 0;
+      if (inTv) return 2;
+      const rect = stage.getBoundingClientRect();
+      const t = rect.width ? ((clientX - rect.left) / rect.width) * 2 : 0;
+      if (t < 0.75) return 0;
+      if (t > 1.25) return 2;
+      return 1;
+    };
+
+    const tFromClientX = (clientX) => {
+      const rect = stage.getBoundingClientRect();
+      if (!rect.width) return 0;
+      const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+      return ratio * 2;
+    };
+
+    let dragging = false;
+    stage.addEventListener("pointerdown", (event) => {
+      if (event.button != null && event.button !== 0) return;
+      dragging = true;
+      stage.classList.add("is-dragging");
+      stage.setPointerCapture(event.pointerId);
+      const t = tFromClientX(event.clientX);
+      positionLens(t);
+      paintLabels(Math.round(t));
+    });
+    stage.addEventListener("pointermove", (event) => {
+      if (!dragging) return;
+      const t = tFromClientX(event.clientX);
+      positionLens(t);
+      paintLabels(Math.round(t));
+    });
+    const endDrag = (event) => {
+      if (!dragging) return;
+      dragging = false;
+      commitMedia(indexFromClientX(event.clientX));
+    };
+    stage.addEventListener("pointerup", endDrag);
+    stage.addEventListener("pointercancel", endDrag);
+
+    slider.addEventListener("input", () => {
+      commitMedia(Number(slider.value));
+    });
+
+    commitMedia(Number(slider.value) || 0);
+    requestAnimationFrame(() => positionLens(Number(root.dataset.value === "tv" ? 2 : root.dataset.value === "both" ? 1 : 0)));
+  }
 
   const savedProviderIds = new Set(normalizeProviderIds(state.user.providers || []));
   let providerList = null;
@@ -2319,7 +2469,7 @@ async function renderCreateScreen() {
     const eras = [...document.querySelectorAll("#era-chips .chip.selected")];
     const rating = document.querySelector("#rating-chips .chip.selected");
     const runtime = document.querySelector("#runtime-chips .chip.selected");
-    const mediaType = document.querySelector("#media-chips .chip.selected")?.dataset.value || "movie";
+    const mediaType = document.getElementById("media-venn")?.dataset.value || "movie";
 
     const releaseYearRanges = eras.map((era) => [
       Number(era.dataset.from || 1950),
@@ -2338,7 +2488,7 @@ async function renderCreateScreen() {
       mediaType,
       includeKids: includeKidsChip?.classList.contains("selected") || false,
       favorPopular: favorPopularChip?.classList.contains("selected") || false,
-      forYou: Boolean(vibePresets[Number(document.querySelector("#vibe-chips .chip.selected")?.dataset.vibe)]?.forYou),
+      forYou: isPlus() && Boolean(vibePresets[Number(document.querySelector("#vibe-chips .chip.selected")?.dataset.vibe)]?.forYou),
     };
 
     const submit = document.getElementById("create-submit");
@@ -2355,7 +2505,7 @@ async function renderCreateScreen() {
   let genresCacheTv = null;
 
   async function loadGenresForMedia() {
-    const media = document.querySelector("#media-chips .chip.selected")?.dataset.value || "movie";
+    const media = document.getElementById("media-venn")?.dataset.value || "movie";
     const chipContainer = document.getElementById("genre-chips");
     if (!chipContainer) return;
 
@@ -2402,6 +2552,8 @@ async function renderCreateScreen() {
     }
   }
 
+  bindMediaVenn();
+  syncRuntimeVisibility();
   loadGenresForMedia();
 }
 

@@ -78,6 +78,12 @@ const backend = {
   friends(userId) {
     return backendRequest(`/friends/index?user_id=${userId}`);
   },
+  removeFriend(userId, friendId) {
+    return backendRequest("/friends/remove", {
+      method: "POST",
+      body: { user_id: userId, friend_id: friendId },
+    });
+  },
   friendsMovieIds(userId, friendId) {
     return backendRequest(
       `/friends/movie_ids?user_id=${userId}&friend_id=${friendId}`

@@ -160,7 +160,7 @@ async function boot() {
       connectCable();
       cable?.subscribe({ channel: "UserGamesChannel" });
     } else {
-      state.view = "name";
+      state.view = "register";
     }
     render();
     return;
@@ -169,7 +169,7 @@ async function boot() {
   if (state.user?.username) {
     await enterHome();
   } else {
-    state.view = "name";
+    state.view = "register";
     render();
   }
 }
@@ -841,7 +841,7 @@ async function undoLastSwipe() {
 
 function screenName() {
   if (state.view === "login" || state.view === "reset" || state.view === "shop") return state.view;
-  if (!state.user?.username) return "name";
+  if (!state.user?.username) return state.view === "name" ? "name" : "register";
   if (!state.game) return state.view;
   if (shouldShowInviteScreen()) {
     return isHost() ? "invitePartner" : "waitingToStart";
@@ -964,15 +964,21 @@ function renderNameScreen() {
   app.innerHTML = `
     <div class="screen center">
       <img src="/logo.png" alt="WannaWatch" class="logo">
-      <h1 class="headline">Pick tonight's movie <span class="accent">together</span></h1>
-      <p class="muted">Swipe with your partner until you both like the same movie — first match wins.</p>
+      <h1 class="headline-sm">Play as a guest</h1>
+      <p class="muted">Jump right in with just a name. You can save an account later.</p>
       <form id="name-form" class="card form-card">
         <label for="username">What should we call you?</label>
         <input id="username" name="username" maxlength="30" placeholder="Enter your name" required autocomplete="nickname">
         <button type="submit" class="btn btn-primary">Let's go</button>
       </form>
+      <button class="link" id="go-register">Create an account instead</button>
       <button class="link" id="go-login">Already have an account? Log in</button>
     </div>`;
+
+  document.getElementById("go-register").addEventListener("click", () => {
+    state.view = "register";
+    render();
+  });
 
   document.getElementById("name-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -1007,7 +1013,7 @@ function renderLoginScreen() {
         <button type="submit" class="btn btn-primary">Log in</button>
       </form>
       <button class="link" id="forgot-password">Forgot password?</button>
-      <button class="link" id="back-to-name">Just play as a guest instead</button>
+      <button class="link" id="back-to-name">${state.user?.username ? "Back to home" : "New here? Create an account"}</button>
     </div>`;
 
   document.getElementById("login-form").addEventListener("submit", async (event) => {
@@ -1037,50 +1043,82 @@ function renderLoginScreen() {
   });
 
   document.getElementById("back-to-name").addEventListener("click", () => {
-    state.view = state.user?.username ? "home" : "name";
+    state.view = state.user?.username ? "home" : "register";
     render();
   });
 }
 
+// New visitors land here by default; guests reach it to save their account.
 function renderRegisterScreen() {
+  const isNewVisitor = !state.user?.username;
+
   app.innerHTML = `
-    ${topBarHtml("")}
+    ${isNewVisitor ? "" : topBarHtml("")}
     <div class="screen center">
-      <h1 class="headline-sm">Save your account</h1>
-      <p class="muted">Keep your games and matches, and log in from any device.</p>
+      ${isNewVisitor
+        ? `<img src="/logo.png" alt="WannaWatch" class="logo">
+           <h1 class="headline">Pick tonight's movie <span class="accent">together</span></h1>
+           <p class="muted">Swipe with your partner until you both like the same movie — first match wins.</p>`
+        : `<h1 class="headline-sm">Save your account</h1>
+           <p class="muted">Keep your games and matches, and log in from any device.</p>`}
       <form id="register-form" class="card form-card">
+        ${isNewVisitor
+          ? `<label for="register-username">Name</label>
+             <input id="register-username" maxlength="30" placeholder="Enter your name" required autocomplete="nickname">`
+          : ""}
+        <label for="register-phone">Phone <span class="muted">(for invites and match texts)</span></label>
+        <input id="register-phone" type="tel" placeholder="+1 555 123 4567" required autocomplete="tel">
         <label for="register-email">Email</label>
         <input id="register-email" type="email" placeholder="you@example.com" required autocomplete="email">
-        <label for="register-phone">Phone <span class="muted">(optional, for SMS alerts)</span></label>
-        <input id="register-phone" type="tel" placeholder="+1 555 123 4567" autocomplete="tel">
         <label for="register-password">Password <span class="muted">(8+ characters)</span></label>
         <input id="register-password" type="password" placeholder="••••••••" required minlength="8" autocomplete="new-password">
-        <button type="submit" class="btn btn-primary">Create login</button>
+        <button type="submit" class="btn btn-primary">${isNewVisitor ? "Sign up" : "Create login"}</button>
       </form>
-      <button class="link" id="back-home">Back to home</button>
+      ${isNewVisitor
+        ? `<button class="link" id="play-as-guest">Just play as a guest</button>
+           <button class="link" id="go-login">Already have an account? Log in</button>`
+        : `<button class="link" id="back-home">Back to home</button>`}
     </div>`;
 
-  bindBrandHome();
+  if (!isNewVisitor) bindBrandHome();
+
   document.getElementById("register-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
       adoptUser(await backend.register({
         user_id: state.user?.id,
-        username: state.user?.username,
+        username: state.user?.username || document.getElementById("register-username").value.trim(),
         email: document.getElementById("register-email").value,
-        phone: document.getElementById("register-phone").value.trim() || undefined,
+        phone: document.getElementById("register-phone").value.trim(),
         password: document.getElementById("register-password").value,
       }));
+    } catch (error) {
+      toast(error.serverMessage || "Could not create the account.");
+      return;
+    }
+
+    if (isNewVisitor) {
+      toast(`Welcome, ${state.user.username}!`);
+      await enterHome();
+    } else {
       toast("Account saved — you can log in anywhere now!");
       state.view = "home";
       lastRenderKey = null;
       render();
-    } catch (error) {
-      toast(error.serverMessage || "Could not create the account.");
     }
   });
 
-  document.getElementById("back-home").addEventListener("click", () => {
+  document.getElementById("play-as-guest")?.addEventListener("click", () => {
+    state.view = "name";
+    render();
+  });
+
+  document.getElementById("go-login")?.addEventListener("click", () => {
+    state.view = "login";
+    render();
+  });
+
+  document.getElementById("back-home")?.addEventListener("click", () => {
     state.view = "home";
     render();
   });
@@ -1387,8 +1425,13 @@ function renderFriendsList() {
     <div class="friend-row">
       <div class="friend-info">
         <strong>${esc(friend.username || "Player")}</strong>
+        ${friend.last_played_at ? `<span class="muted">Played ${esc(lastPlayedLabel(friend.last_played_at))}</span>` : ""}
       </div>
-      <button class="btn btn-secondary btn-small" data-play="${friend.id}">Movie night</button>
+      <div class="friend-actions">
+        <button class="btn btn-ghost btn-small" data-friend-likes="${friend.id}">Likes</button>
+        <button class="btn btn-secondary btn-small" data-play="${friend.id}">Movie night</button>
+        <button class="btn btn-ghost btn-small friend-remove" data-remove-friend="${friend.id}" aria-label="Remove ${esc(friend.username || "friend")}" title="Remove friend">✕</button>
+      </div>
     </div>`).join("");
 
   container.querySelectorAll("[data-play]").forEach((btn) => {
@@ -1397,6 +1440,43 @@ function renderFriendsList() {
       await startGameWithFriend(Number(btn.dataset.play));
     });
   });
+
+  container.querySelectorAll("[data-friend-likes]").forEach((btn) => {
+    btn.addEventListener("click", () => openFriendLikes(Number(btn.dataset.friendLikes)));
+  });
+
+  container.querySelectorAll("[data-remove-friend]").forEach((btn) => {
+    btn.addEventListener("click", () => removeFriend(Number(btn.dataset.removeFriend)));
+  });
+}
+
+function lastPlayedLabel(timestamp) {
+  const days = Math.floor((Date.now() - Date.parse(timestamp)) / 86400000);
+  if (days < 1) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 30) return `${days} days ago`;
+  return new Date(timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+function openFriendLikes(friendId) {
+  state.libraryTab = "friends";
+  state.libraryFriendId = friendId;
+  state.view = "history";
+  render();
+}
+
+async function removeFriend(friendId) {
+  const friend = state.friends.find((f) => f.id === friendId);
+  if (!confirm(`Remove ${friend?.username || "this friend"} from your friends? They'll come back if you play together again.`)) return;
+
+  try {
+    await backend.removeFriend(state.user.id, friendId);
+    state.friends = state.friends.filter((f) => f.id !== friendId);
+    renderFriendsList();
+    toast(`Removed ${friend?.username || "friend"}.`);
+  } catch {
+    toast("Couldn't remove that friend.");
+  }
 }
 
 function renderGamesList() {
@@ -3547,11 +3627,16 @@ async function renderLibraryFriends(container) {
          <p class="hint">Starts a first-match game using only the movies you’ve both already liked.</p>`
       : shared.length === 1
         ? `<button type="button" class="btn btn-primary" id="settle-shared-one">That’s the one — settle</button>`
-        : `<p class="muted">No shared likes yet. Play a game with ${esc(friend.username)} first.</p>`}
+        : `<p class="muted">No shared likes yet.${theirs.length ? "" : ` Play a game with ${esc(friend.username)} first.`}</p>`}
     ${shared.length > 1
       ? `<button type="button" class="btn btn-ghost btn-small" id="settle-random-shared">Pick one for us</button>`
       : ""}
-    <div id="library-grid" class="results-grid"></div>`;
+    <div id="library-grid" class="results-grid"></div>
+    ${theirs.length
+      ? `<h2 class="friend-likes-heading">${esc(friend.username)}’s likes</h2>
+         <p class="muted">Everything ${esc(friend.username)} liked in games you played together.</p>
+         <div id="friend-likes-grid" class="results-grid"></div>`
+      : ""}`;
 
   document.getElementById("sift-with-friend")?.addEventListener("click", async (event) => {
     event.target.disabled = true;
@@ -3570,13 +3655,21 @@ async function renderLibraryFriends(container) {
     settleOnTitle(key, await fetchMovieSummary(id, mediaType), friend.username);
   });
 
-  if (shared.length === 0) return;
-
   await fillLibraryGrid(
     document.getElementById("library-grid"),
     shared.slice(0, 40).map((key) => ({
       key,
       subtitle: `You & ${friend.username} both liked this`,
+      withNames: friend.username,
+      showSettle: true,
+    }))
+  );
+
+  await fillLibraryGrid(
+    document.getElementById("friend-likes-grid"),
+    theirs.slice(0, 40).map((key) => ({
+      key,
+      subtitle: shared.includes(key) ? "You both liked this" : `Liked by ${friend.username}`,
       withNames: friend.username,
       showSettle: true,
     }))

@@ -10,9 +10,19 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_10_10_010000) do
+ActiveRecord::Schema[7.1].define(version: 2026_10_12_010000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "plpgsql"
+
+  create_table "friend_removals", force: :cascade do |t|
+    t.bigint "user_id", null: false
+    t.bigint "friend_id", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["friend_id"], name: "index_friend_removals_on_friend_id"
+    t.index ["user_id", "friend_id"], name: "index_friend_removals_on_user_id_and_friend_id", unique: true
+    t.index ["user_id"], name: "index_friend_removals_on_user_id"
+  end
 
   create_table "game_invites", force: :cascade do |t|
     t.bigint "game_id", null: false
@@ -108,6 +118,8 @@ ActiveRecord::Schema[7.1].define(version: 2026_10_10_010000) do
     t.index ["stripe_subscription_id"], name: "index_users_on_stripe_subscription_id", unique: true, where: "(stripe_subscription_id IS NOT NULL)"
   end
 
+  add_foreign_key "friend_removals", "users"
+  add_foreign_key "friend_removals", "users", column: "friend_id"
   add_foreign_key "game_invites", "games"
   add_foreign_key "game_invites", "users", column: "invitee_id"
   add_foreign_key "game_invites", "users", column: "inviter_id"

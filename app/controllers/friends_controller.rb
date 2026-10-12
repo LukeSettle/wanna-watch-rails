@@ -5,6 +5,14 @@ class FriendsController < ApiController
     render json: user.friends, status: :ok
   end
 
+  def remove
+    user = User.find(params[:user_id])
+    friend = User.find(params[:friend_id])
+    user.remove_friend!(friend)
+
+    render json: { removed: true }, status: :ok
+  end
+
   def movie_ids
     user = User.find(params[:user_id])
     friend = User.find(params[:friend_id])

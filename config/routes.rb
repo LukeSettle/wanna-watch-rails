@@ -12,6 +12,7 @@ Rails.application.routes.draw do
   get 'users/movie_ratings'
   get 'friends/index'
   get 'friends/movie_ids'
+  post 'friends/remove'
 
   resources :game_invites, only: [:index, :create] do
     member do

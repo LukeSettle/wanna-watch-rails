@@ -1533,13 +1533,16 @@ button.game-row {
 
 .friend-card .friend-actions {
   display: grid;
-  grid-template-columns: 1fr 1.35fr;
+  grid-template-columns: minmax(4.5rem, 0.75fr) minmax(0, 1.6fr);
   gap: 8px;
   width: 100%;
 }
 
 .friend-card .friend-actions .btn {
   width: 100%;
+  white-space: normal;
+  line-height: 1.15;
+  min-height: 36px;
 }
 
 .friend-info {

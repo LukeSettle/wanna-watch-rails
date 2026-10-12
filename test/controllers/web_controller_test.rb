@@ -5,6 +5,12 @@ class WebControllerTest < ActionDispatch::IntegrationTest
     [
       "/",
       "/configure",
+      "/login",
+      "/register",
+      "/guest",
+      "/reset",
+      "/shop",
+      "/play/ABC123",
       "/movies",
       "/movies/likes",
       "/movies/friends",

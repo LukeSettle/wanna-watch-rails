@@ -2,10 +2,67 @@
 // Values are "movie" | "both" | "tv".
 
 const MEDIA_GLASS_OPTIONS = [
-  { value: "movie", label: "Movies" },
-  { value: "both", label: "Both" },
-  { value: "tv", label: "TV Shows" },
+  { value: "movie", label: "Movies", icon: "film" },
+  { value: "both", label: "Both", icon: "both" },
+  { value: "tv", label: "TV Shows", icon: "tv" },
 ];
+
+function circlePath(cx, cy, r) {
+  return `M ${cx - r} ${cy}a ${r} ${r} 0 1 0 ${r * 2} 0a ${r} ${r} 0 1 0 ${-r * 2} 0`;
+}
+
+function filmShapes(h, withTail) {
+  const cx = 32;
+  const cy = 30;
+  const holes = [[cx, cy, 2.5]];
+  for (let i = 0; i < 5; i += 1) {
+    const angle = ((-90 + i * 72) * Math.PI) / 180;
+    holes.push([cx + Math.cos(angle) * 13.1, cy + Math.sin(angle) * 13.1, 4.85]);
+  }
+  const disc = [circlePath(cx, cy, 23.4), ...holes.map(([x, y, r]) => circlePath(x, y, r))].join("");
+  const shapes = [h("path", { d: disc, fill: "currentColor", fillRule: "evenodd" })];
+  if (withTail) {
+    shapes.push(
+      h("path", {
+        d: "M47.4 44.6c2.4-.4 6.6.8 8.6 3.6 1.6 2.2 1.2 4.6-1.2 5.4-2.8.9-6.4-.6-8.2-3.2-1.6-2.2-1.8-4.8-.4-5.6.6-.3.8-.3 1.2-.2z",
+        fill: "currentColor",
+      })
+    );
+  }
+  return shapes;
+}
+
+function tvShapes(h) {
+  const frame = [
+    "M18 22H46A12 12 0 0 1 58 34V50A12 12 0 0 1 46 62H18A12 12 0 0 1 6 50V34A12 12 0 0 1 18 22Z",
+    "M22 31H42A6 6 0 0 1 48 37V47A6 6 0 0 1 42 53H22A6 6 0 0 1 16 47V37A6 6 0 0 1 22 31Z",
+  ].join("");
+  return [
+    h("path", { d: frame, fill: "currentColor", fillRule: "evenodd" }),
+    h("path", {
+      d: "M22 6L32 21.5M42 6L32 21.5",
+      fill: "none",
+      stroke: "currentColor",
+      strokeWidth: "5.5",
+      strokeLinecap: "round",
+    }),
+  ];
+}
+
+function mediaGlassIcon(h, name) {
+  if (name === "both") {
+    return h(
+      "svg",
+      { viewBox: "4 0 100 68", "aria-hidden": "true" },
+      h("g", { transform: "translate(42,3) scale(0.98)" }, tvShapes(h)),
+      h("g", { transform: "translate(6,2) scale(0.96)" }, filmShapes(h, false))
+    );
+  }
+  if (name === "tv") {
+    return h("svg", { viewBox: "2 2 60 64", "aria-hidden": "true" }, tvShapes(h));
+  }
+  return h("svg", { viewBox: "0 0 64 68", "aria-hidden": "true" }, filmShapes(h, true));
+}
 
 function mediaGlassIndex(value) {
   const index = MEDIA_GLASS_OPTIONS.findIndex((option) => option.value === value);
@@ -21,7 +78,6 @@ function MediaGlassSelect({ value = "both", onChange, labelledBy }) {
   const uid = React.useId().replace(/:/g, "");
   const index = mediaGlassIndex(value);
   const sheenId = `mgs-sheen-${uid}`;
-  const tintId = `mgs-tint-${uid}`;
 
   const placePill = (position) => {
     const pill = pillRef.current;
@@ -134,28 +190,20 @@ function MediaGlassSelect({ value = "both", onChange, labelledBy }) {
         { className: "mgs-pill-glass" },
         h(
           "svg",
-          { className: "mgs-sheen", viewBox: "0 0 160 48", preserveAspectRatio: "none" },
+          { className: "mgs-sheen", viewBox: "0 0 160 110", preserveAspectRatio: "none" },
           h(
             "defs",
             null,
             h(
               "linearGradient",
-              { id: tintId, x1: "0", y1: "0", x2: "1", y2: "1" },
-              h("stop", { offset: "0%", stopColor: "#8ec5ff", stopOpacity: "0.72" }),
-              h("stop", { offset: "48%", stopColor: "#c4b5fd", stopOpacity: "0.55" }),
-              h("stop", { offset: "100%", stopColor: "#67e8f9", stopOpacity: "0.38" })
-            ),
-            h(
-              "linearGradient",
               { id: sheenId, x1: "0", y1: "0", x2: "0", y2: "1" },
-              h("stop", { offset: "0%", stopColor: "#ffffff", stopOpacity: "0.92" }),
-              h("stop", { offset: "42%", stopColor: "#ffffff", stopOpacity: "0.18" }),
-              h("stop", { offset: "100%", stopColor: "#ffffff", stopOpacity: "0" })
+              h("stop", { offset: "0%", stopColor: "#ffffff", stopOpacity: "0.95" }),
+              h("stop", { offset: "34%", stopColor: "#ffffff", stopOpacity: "0.28" }),
+              h("stop", { offset: "62%", stopColor: "#ffffff", stopOpacity: "0" })
             )
           ),
-          h("rect", { x: "0", y: "0", width: "160", height: "48", fill: `url(#${tintId})` }),
-          h("rect", { x: "0", y: "0", width: "160", height: "24", fill: `url(#${sheenId})` }),
-          h("ellipse", { cx: "80", cy: "6", rx: "54", ry: "7", fill: "rgba(255,255,255,0.55)" })
+          h("ellipse", { cx: "80", cy: "10", rx: "58", ry: "18", fill: "rgba(255,255,255,0.72)" }),
+          h("rect", { x: "0", y: "0", width: "160", height: "52", fill: `url(#${sheenId})` })
         )
       )
     ),
@@ -172,7 +220,8 @@ function MediaGlassSelect({ value = "both", onChange, labelledBy }) {
           tabIndex: selected ? 0 : -1,
           "data-value": option.value,
         },
-        option.label
+        h("span", { className: "mgs-icon", "aria-hidden": "true" }, mediaGlassIcon(h, option.icon)),
+        h("span", { className: "mgs-label" }, option.label)
       );
     })
   );

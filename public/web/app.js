@@ -3386,7 +3386,6 @@ function movieCardHtml(movie) {
   const rating = movie.vote_average ? movie.vote_average.toFixed(1) : "–";
   const poster = posterUrl(movie.poster_path);
   const media = movie.media_type || "movie";
-  const kind = media === "tv" ? "TV" : "";
   return `
     <div class="movie-card" data-id="${movie.id}" data-media="${media}">
       <div class="stamp stamp-like">LIKE</div>
@@ -3396,13 +3395,6 @@ function movieCardHtml(movie) {
         ${poster
           ? `<img class="poster" src="${poster}" alt="${esc(movie.title)}" draggable="false">`
           : `<div class="poster poster-missing">${esc(movie.title)}</div>`}
-      </div>
-      <div class="card-caption">
-        <div class="card-title-row">
-          <strong>${esc(movie.title)}</strong>
-          <span class="rating">★ ${rating}</span>
-        </div>
-        <span class="muted">${[year, kind].filter(Boolean).join(" · ")}</span>
       </div>
       <div class="card-details">
         <h3>${esc(movie.title)} <span class="muted">${year}</span></h3>
@@ -3892,7 +3884,11 @@ function bindPlusNudge(root) {
   });
 }
 
+const LIBRARY_PAGE_SIZE = 10;
+let libraryRenderId = 0;
+
 async function renderHistoryScreen() {
+  const renderId = ++libraryRenderId;
   app.innerHTML = `
     ${topBarHtml("")}
     <div class="screen library-screen">
@@ -3936,7 +3932,7 @@ async function renderHistoryScreen() {
   }
 
   const container = document.getElementById("history-content");
-  if (!container) return;
+  if (!container || !container.isConnected || renderId !== libraryRenderId) return;
 
   const library = buildLibraryFromGames(games);
   if (state.libraryTab === "matches") {
@@ -4012,7 +4008,7 @@ async function renderLibraryMatches(container, matchEntries) {
     settleOnTitle(key, movie, [...(meta.with || [])].join(", "));
   });
 
-  await fillLibraryGrid(
+  mountPagedLibraryGrid(
     document.getElementById("library-grid"),
     visible.map(([key, meta]) => ({
       key,
@@ -4052,7 +4048,7 @@ async function renderLibraryLikes(container, likeEntries) {
     settleOnTitle(key, movie, [...(meta.with || [])].join(", "));
   });
 
-  await fillLibraryGrid(
+  mountPagedLibraryGrid(
     document.getElementById("library-grid"),
     visible.map(([key, meta]) => ({
       key,
@@ -4068,6 +4064,7 @@ async function renderLibraryLikes(container, likeEntries) {
 }
 
 async function renderLibraryFriends(container) {
+  const renderId = libraryRenderId;
   if (!state.friends.length) {
     try {
       const friends = await backend.friends(state.user.id);
@@ -4131,7 +4128,7 @@ async function renderLibraryFriends(container) {
     return;
   }
 
-  if (!body.isConnected) return;
+  if (!body.isConnected || libraryRenderId !== renderId) return;
 
   body.innerHTML = `
     <header class="reel-header">
@@ -4180,9 +4177,9 @@ async function renderLibraryFriends(container) {
     settleOnTitle(key, await fetchMovieSummary(id, mediaType), friend.username);
   });
 
-  await fillLibraryGrid(
+  mountPagedLibraryGrid(
     document.getElementById("library-grid"),
-    shared.slice(0, 40).map((key) => ({
+    shared.map((key) => ({
       key,
       subtitle: `You & ${friend.username} both liked this`,
       withNames: friend.username,
@@ -4190,9 +4187,9 @@ async function renderLibraryFriends(container) {
     }))
   );
 
-  await fillLibraryGrid(
+  mountPagedLibraryGrid(
     document.getElementById("friend-likes-grid"),
-    theirs.slice(0, 40).map((key) => ({
+    theirs.map((key) => ({
       key,
       subtitle: shared.includes(key) ? "You both liked this" : `Liked by ${friend.username}`,
       withNames: friend.username,
@@ -4237,66 +4234,143 @@ function settleOnTitle(key, movie, withNames = "") {
   if (movie) openMovieModal(movie.id, movie.media_type);
 }
 
-async function fillLibraryGrid(grid, items) {
+function libraryCardHtml(item, movie, mediaType) {
+  const year = movie.release_date ? movie.release_date.slice(0, 4) : "";
+  const poster = posterUrl(movie.poster_path, "w342");
+  const media = movie.media_type || mediaType || "movie";
+  const providers = preferredFlatrateProviders(movie);
+  const watchLabel = "Watch";
+  const watchTitle = providers[0] ? `Watch on ${providers[0].provider_name}` : "Watch tonight";
+  return `
+    <article class="result-card actionable" data-id="${esc(item.key)}" data-media="${media}" data-with="${esc(item.withNames || "")}">
+      <button type="button" class="result-card-main" data-open-match>
+        ${poster ? `<img src="${poster}" alt="${esc(movie.title)}">` : `<div class="poster-missing">${esc(movie.title)}</div>`}
+        <div class="result-info">
+          <strong>${esc(movie.title)}</strong>
+          <span class="muted">${esc(item.subtitle || `${year} · ★ ${movie.vote_average ? movie.vote_average.toFixed(1) : "–"}`)}</span>
+        </div>
+      </button>
+      <div class="match-actions compact">
+        ${item.showSettle
+          ? `<button type="button" class="btn btn-secondary btn-small" data-settle>Tonight</button>`
+          : ""}
+        ${watchTonightUrl(movie)
+          ? `<a class="btn btn-primary btn-small" href="${esc(watchTonightUrl(movie))}" target="_blank" rel="noopener noreferrer" title="${esc(watchTitle)}">${esc(watchLabel)}</a>`
+          : ""}
+        <button type="button" class="btn btn-ghost btn-small" data-share-match>Share</button>
+      </div>
+    </article>`;
+}
+
+function bindLibraryCard(card, { item, movie, id, mediaType }) {
+  card.querySelector("[data-open-match]")?.addEventListener("click", () => openMovieModal(id, mediaType));
+  card.querySelector("[data-settle]")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    settleOnTitle(item.key, movie, item.withNames || card.dataset.with || "");
+  });
+  bindMatchActions(card, movie);
+}
+
+async function resolveLibraryPage(items) {
+  const settled = await Promise.all(items.map(async (item) => {
+    const { id, mediaType } = parseMediaKey(item.key);
+    const movie = await fetchMovieSummary(id, mediaType);
+    if (!movie) return null;
+    return { item, movie, id, mediaType };
+  }));
+  return settled.filter(Boolean);
+}
+
+function mountPagedLibraryGrid(grid, items) {
   if (!grid) return;
-  if (!items.length) {
+  const renderId = libraryRenderId;
+  const list = items || [];
+  if (!list.length) {
     grid.innerHTML = "";
     return;
   }
 
-  grid.innerHTML = `<p class="muted">Loading movies…</p>`;
-  const resolved = [];
-  for (const item of items) {
-    const { id, mediaType } = parseMediaKey(item.key);
-    const movie = await fetchMovieSummary(id, mediaType);
-    if (!movie) continue;
-    resolved.push({ item, movie, id, mediaType });
-  }
+  grid.innerHTML = `
+    <p class="muted library-page-status" data-status>Loading movies…</p>
+    <div class="library-more" data-more>
+      <p class="muted library-more-label" data-more-label hidden>Loading more…</p>
+      <div class="library-sentinel" data-sentinel></div>
+    </div>`;
 
-  if (!grid.isConnected) return;
-  if (!resolved.length) {
-    grid.innerHTML = `<p class="muted">Couldn't load those titles.</p>`;
-    return;
-  }
+  const more = grid.querySelector("[data-more]");
+  const sentinel = grid.querySelector("[data-sentinel]");
+  const moreLabel = grid.querySelector("[data-more-label]");
+  const status = grid.querySelector("[data-status]");
+  let nextIndex = 0;
+  let rendered = 0;
+  let loading = false;
+  let observer;
+  let onScroll;
 
-  grid.innerHTML = resolved.map(({ item, movie, mediaType }) => {
-    const year = movie.release_date ? movie.release_date.slice(0, 4) : "";
-    const poster = posterUrl(movie.poster_path, "w342");
-    const media = movie.media_type || mediaType || "movie";
-    const providers = preferredFlatrateProviders(movie);
-    const watchLabel = "Watch";
-    const watchTitle = providers[0] ? `Watch on ${providers[0].provider_name}` : "Watch tonight";
-    return `
-      <article class="result-card actionable" data-id="${esc(item.key)}" data-media="${media}" data-with="${esc(item.withNames || "")}">
-        <button type="button" class="result-card-main" data-open-match>
-          ${poster ? `<img src="${poster}" alt="${esc(movie.title)}">` : `<div class="poster-missing">${esc(movie.title)}</div>`}
-          <div class="result-info">
-            <strong>${esc(movie.title)}</strong>
-            <span class="muted">${esc(item.subtitle || `${year} · ★ ${movie.vote_average ? movie.vote_average.toFixed(1) : "–"}`)}</span>
-          </div>
-        </button>
-        <div class="match-actions compact">
-          ${item.showSettle
-            ? `<button type="button" class="btn btn-secondary btn-small" data-settle>Tonight</button>`
-            : ""}
-          ${watchTonightUrl(movie)
-            ? `<a class="btn btn-primary btn-small" href="${esc(watchTonightUrl(movie))}" target="_blank" rel="noopener noreferrer" title="${esc(watchTitle)}">${esc(watchLabel)}</a>`
-            : ""}
-          <button type="button" class="btn btn-ghost btn-small" data-share-match>Share</button>
-        </div>
-      </article>`;
-  }).join("");
+  const stop = () => {
+    observer?.disconnect();
+    if (onScroll) window.removeEventListener("scroll", onScroll);
+    onScroll = null;
+    loading = true;
+  };
 
-  [...grid.querySelectorAll(".result-card")].forEach((card, index) => {
-    const { item, movie, id, mediaType } = resolved[index];
-    card.querySelector("[data-open-match]")?.addEventListener("click", () => openMovieModal(id, mediaType));
-    card.querySelector("[data-settle]")?.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      settleOnTitle(item.key, movie, item.withNames || card.dataset.with || "");
+  const loadNext = async () => {
+    if (loading || renderId !== libraryRenderId || !grid.isConnected || nextIndex >= list.length) {
+      if (!grid.isConnected || renderId !== libraryRenderId) stop();
+      return;
+    }
+    loading = true;
+    if (rendered > 0) moreLabel.hidden = false;
+    const slice = list.slice(nextIndex, nextIndex + LIBRARY_PAGE_SIZE);
+    nextIndex += slice.length;
+    const page = await resolveLibraryPage(slice);
+    if (renderId !== libraryRenderId || !grid.isConnected) {
+      stop();
+      return;
+    }
+    page.forEach((resolved) => {
+      const holder = document.createElement("div");
+      holder.innerHTML = libraryCardHtml(resolved.item, resolved.movie, resolved.mediaType);
+      const card = holder.firstElementChild;
+      more.before(card);
+      bindLibraryCard(card, resolved);
+      rendered += 1;
     });
-    bindMatchActions(card, movie);
-  });
+    status?.remove();
+    moreLabel.hidden = true;
+    loading = false;
+    if (nextIndex >= list.length) {
+      stop();
+      more.remove();
+      if (!rendered) grid.innerHTML = `<p class="muted">Couldn't load those titles.</p>`;
+      return;
+    }
+    const box = sentinel.getBoundingClientRect();
+    if (box.top <= window.innerHeight + 320) loadNext();
+  };
+
+  if ("IntersectionObserver" in window) {
+    observer = new IntersectionObserver((entries) => {
+      if (!grid.isConnected || renderId !== libraryRenderId) {
+        stop();
+        return;
+      }
+      if (entries.some((entry) => entry.isIntersecting)) loadNext();
+    }, { root: null, rootMargin: "320px 0px" });
+    observer.observe(sentinel);
+  } else {
+    onScroll = () => {
+      if (!grid.isConnected || renderId !== libraryRenderId) {
+        stop();
+        return;
+      }
+      const box = sentinel.getBoundingClientRect();
+      if (box.top <= window.innerHeight + 320) loadNext();
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+  }
+  loadNext();
 }
 
 window.addEventListener("popstate", onAppPopstate);

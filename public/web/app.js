@@ -25,6 +25,7 @@ const state = {
 
 let cable = null;
 let lastRenderKey = null;
+let mediaGlassRoot = null;
 let ignoreClicksUntil = 0;
 let suppressPopstate = false;
 
@@ -1038,7 +1039,7 @@ async function createGame(values) {
     query: JSON.stringify(query),
     user_id: state.user.id,
     providers: values.providers,
-    mode: values.mode || "classic",
+    mode: values.mode || "first_match",
   });
   startGame(game);
 }
@@ -1340,6 +1341,10 @@ function render() {
   }
   lastRenderKey = key;
   if (!history.state?.wwModal) dismissModal();
+  if (screen !== "create" && mediaGlassRoot) {
+    mediaGlassRoot.unmount();
+    mediaGlassRoot = null;
+  }
 
   const renderers = {
     name: renderNameScreen,
@@ -1985,6 +1990,8 @@ async function removeFriend(friendId) {
 let genresCache = null;
 
 async function renderCreateScreen() {
+  mediaGlassRoot?.unmount();
+  mediaGlassRoot = null;
   const currentYear = new Date().getFullYear();
   const eraPresets = [
     { label: "Any time", from: 1950, to: currentYear, any: true },
@@ -1995,15 +2002,15 @@ async function renderCreateScreen() {
     { label: "Classics", from: 1950, to: 1979 },
   ];
   const vibePresets = [
-    { mark: "01", label: "Surprise me", blurb: "No rules. Let the reel pick.", genres: [], rating: 0, era: "Any time", favorPopular: false, includeKids: false },
-    { mark: "02", label: "Picked for us", blurb: "Shaped by what you've loved.", genres: [], rating: 0, era: "Any time", favorPopular: false, includeKids: false, forYou: true },
-    { mark: "03", label: "Crowd favorites", blurb: "The titles everyone knows.", genres: [], rating: 6, era: "Any time", favorPopular: true, includeKids: false },
-    { mark: "04", label: "Date night", blurb: "Romance, warmth, a little laugh.", genres: [10749, 35, 18], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
-    { mark: "05", label: "Laugh out loud", blurb: "Comedies worth sharing a couch for.", genres: [35], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
-    { mark: "06", label: "Edge of your seat", blurb: "Thrillers, mysteries, and chills.", genres: [53, 27, 9648, 80], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
-    { mark: "07", label: "Family night", blurb: "Something the whole row can watch.", genres: [10751, 16, 12], rating: 6, era: "Any time", favorPopular: false, includeKids: true },
-    { mark: "08", label: "Critically acclaimed", blurb: "High scores, lasting aftertaste.", genres: [], rating: 8, era: "Any time", favorPopular: false, includeKids: false },
-    { mark: "09", label: "Throwback", blurb: "A double feature from the 80s and 90s.", genres: [], rating: 7, era: "80s & 90s", favorPopular: false, includeKids: false },
+    { label: "Surprise me", blurb: "No rules. Let the reel pick.", genres: [], rating: 0, era: "Any time", favorPopular: false, includeKids: false },
+    { label: "Picked for us", blurb: "Shaped by what you've loved.", genres: [], rating: 0, era: "Any time", favorPopular: false, includeKids: false, forYou: true },
+    { label: "Crowd favorites", blurb: "The titles everyone knows.", genres: [], rating: 6, era: "Any time", favorPopular: true, includeKids: false },
+    { label: "Date night", blurb: "Romance, warmth, a little laugh.", genres: [10749, 35, 18], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
+    { label: "Laugh out loud", blurb: "Comedies worth sharing a couch for.", genres: [35], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
+    { label: "Edge of your seat", blurb: "Thrillers, mysteries, and chills.", genres: [53, 27, 9648, 80], rating: 6, era: "Any time", favorPopular: false, includeKids: false },
+    { label: "Family night", blurb: "Something the whole row can watch.", genres: [10751, 16, 12], rating: 6, era: "Any time", favorPopular: false, includeKids: true },
+    { label: "Critically acclaimed", blurb: "High scores, lasting aftertaste.", genres: [], rating: 8, era: "Any time", favorPopular: false, includeKids: false },
+    { label: "Throwback", blurb: "A double feature from the 80s and 90s.", genres: [], rating: 7, era: "80s & 90s", favorPopular: false, includeKids: false },
   ];
   const ratingPresets = [
     { label: "Any rating", min: 0 },
@@ -2114,36 +2121,33 @@ async function renderCreateScreen() {
               <strong>Endless</strong>
               <span>Keep swiping on your own time; get alerted on every match.</span>
             </button>
-            <button type="button" class="mode-option" data-mode="classic">
-              <strong>Classic</strong>
-              <span>Same 20 titles for everyone, then compare.</span>
-            </button>
           </div>
         </section>
 
         <section class="card form-card">
           <div class="field-block">
             <label>What's the mood?</label>
-            <p class="hint">One choice sets the night. “Picked for us” builds the deck from titles you've already liked.</p>
+            <p class="hint">${isPlus()
+              ? "One choice sets the night. “Picked for us” builds the deck from titles you've already liked."
+              : "One choice sets the night. “Picked for us” is included with WannaWatch+."}</p>
             <div class="vibe-grid" id="vibe-chips">
-              ${vibePresets.map((v, i) => `
-                <button type="button" class="chip vibe-card ${i === 0 ? "selected" : ""}" data-vibe="${i}">
-                  <span class="vibe-mark">${v.mark}</span>
+              ${vibePresets.map((v, i) => {
+                const locked = v.forYou && !isPlus();
+                return `
+                <button type="button" class="chip vibe-card ${i === 0 ? "selected" : ""} ${locked ? "vibe-locked" : ""}" data-vibe="${i}" ${locked ? 'aria-label="Picked for us. Requires WannaWatch+."' : ""}>
                   <span class="vibe-copy">
                     <strong>${esc(v.label)}</strong>
                     <span>${esc(v.blurb)}</span>
                   </span>
-                </button>`).join("")}
+                  ${locked ? `<span class="vibe-lock">WannaWatch+</span>` : ""}
+                </button>`;
+              }).join("")}
             </div>
           </div>
 
           <div class="field-block">
-            <label>Movies or TV?</label>
-            <div class="chips segmented single" id="media-chips">
-              <button type="button" class="chip selected" data-value="movie">Movies</button>
-              <button type="button" class="chip" data-value="tv">TV shows</button>
-              <button type="button" class="chip" data-value="both">Both</button>
-            </div>
+            <label id="media-label">Movies or TV?</label>
+            <div id="media-glass"></div>
           </div>
 
           <div class="field-block">
@@ -2203,9 +2207,14 @@ async function renderCreateScreen() {
   document.getElementById("vibe-chips").addEventListener("click", (event) => {
     const chip = event.target.closest(".chip");
     if (!chip) return;
+    const vibe = vibePresets[Number(chip.dataset.vibe)];
+    if (vibe?.forYou && !isPlus()) {
+      openPlusShop();
+      return;
+    }
     document.querySelectorAll("#vibe-chips .chip").forEach((el) => el.classList.remove("selected"));
     chip.classList.add("selected");
-    applyVibe(vibePresets[Number(chip.dataset.vibe)]);
+    applyVibe(vibe);
   });
 
   const toggleMulti = (containerId) => {
@@ -2241,23 +2250,42 @@ async function renderCreateScreen() {
   toggleMulti("provider-chips");
   toggleMulti("genre-chips");
   toggleMulti("language-chips");
-  selectOne("media-chips");
   selectOne("rating-chips");
   selectOne("runtime-chips");
 
   favorPopularChip?.addEventListener("click", () => favorPopularChip.classList.toggle("selected"));
   includeKidsChip?.addEventListener("click", () => includeKidsChip.classList.toggle("selected"));
 
+  let mediaType = "both";
+
+  function selectedMediaType() {
+    return mediaType;
+  }
+
   const syncRuntimeVisibility = () => {
-    const media = document.querySelector("#media-chips .chip.selected")?.dataset.value || "movie";
     const block = document.getElementById("runtime-block");
-    if (block) block.hidden = media === "tv";
+    if (block) block.hidden = selectedMediaType() === "tv";
   };
-  document.getElementById("media-chips").addEventListener("click", () => {
-    syncRuntimeVisibility();
-    loadGenresForMedia();
-  });
-  syncRuntimeVisibility();
+
+  function mountMediaGlass() {
+    const mountEl = document.getElementById("media-glass");
+    if (!mountEl || !window.ReactDOM || !window.MediaGlassSelect) return;
+    mediaGlassRoot = ReactDOM.createRoot(mountEl);
+    const draw = () => {
+      mediaGlassRoot.render(React.createElement(MediaGlassSelect, {
+        value: mediaType,
+        labelledBy: "media-label",
+        onChange(next) {
+          if (next === mediaType) return;
+          mediaType = next;
+          draw();
+          syncRuntimeVisibility();
+          loadGenresForMedia();
+        },
+      }));
+    };
+    draw();
+  }
 
   const savedProviderIds = new Set(normalizeProviderIds(state.user.providers || []));
   let providerList = null;
@@ -2319,7 +2347,7 @@ async function renderCreateScreen() {
     const eras = [...document.querySelectorAll("#era-chips .chip.selected")];
     const rating = document.querySelector("#rating-chips .chip.selected");
     const runtime = document.querySelector("#runtime-chips .chip.selected");
-    const mediaType = document.querySelector("#media-chips .chip.selected")?.dataset.value || "movie";
+    const mediaType = selectedMediaType();
 
     const releaseYearRanges = eras.map((era) => [
       Number(era.dataset.from || 1950),
@@ -2338,7 +2366,7 @@ async function renderCreateScreen() {
       mediaType,
       includeKids: includeKidsChip?.classList.contains("selected") || false,
       favorPopular: favorPopularChip?.classList.contains("selected") || false,
-      forYou: Boolean(vibePresets[Number(document.querySelector("#vibe-chips .chip.selected")?.dataset.vibe)]?.forYou),
+      forYou: isPlus() && Boolean(vibePresets[Number(document.querySelector("#vibe-chips .chip.selected")?.dataset.vibe)]?.forYou),
     };
 
     const submit = document.getElementById("create-submit");
@@ -2355,7 +2383,7 @@ async function renderCreateScreen() {
   let genresCacheTv = null;
 
   async function loadGenresForMedia() {
-    const media = document.querySelector("#media-chips .chip.selected")?.dataset.value || "movie";
+    const media = selectedMediaType();
     const chipContainer = document.getElementById("genre-chips");
     if (!chipContainer) return;
 
@@ -2402,6 +2430,8 @@ async function renderCreateScreen() {
     }
   }
 
+  mountMediaGlass();
+  syncRuntimeVisibility();
   loadGenresForMedia();
 }
 

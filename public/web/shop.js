@@ -265,7 +265,7 @@ function renderShopScreen() {
       <div class="hero">
         <p class="kicker">Membership</p>
         <h1 class="headline-sm">WannaWatch+</h1>
-        <p class="muted">$2.99/month. No ads, Fine-tune on custom games, and your full likes &amp; matches history while you're subscribed. Cancel anytime.</p>
+        <p class="muted">$2.99/month. No ads, Fine-tune and Picked for us on custom games, and your full likes &amp; matches history while you're subscribed. Cancel anytime.</p>
       </div>
       <div id="shop-status" class="shop-status muted">Loading…</div>
       <div id="shop-products" class="shop-products"></div>
@@ -315,6 +315,7 @@ async function loadShopCatalog() {
         <ul class="shop-perks">
           <li>No ad breaks or banners</li>
           <li>Fine-tune custom games (genres, eras, runtime, language)</li>
+          <li>Picked for us — a deck shaped by what you've loved</li>
           <li>Full likes &amp; matches history — not just the last ${LIBRARY_FREE_LIMIT}</li>
         </ul>
         <div class="shop-actions">

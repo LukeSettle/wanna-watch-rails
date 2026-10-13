@@ -35,7 +35,7 @@ module ShopCatalog
       id: "wannawatch_plus",
       name: "WannaWatch+",
       tagline: "Monthly subscription",
-      description: "No ads, Fine-tune on custom games, and your full likes & matches history — while you're subscribed.",
+      description: "No ads, Fine-tune and Picked for us on custom games, and your full likes & matches history — while you're subscribed.",
       amount_cents: 299,
       kind: "subscription",
       interval: "month",

@@ -227,6 +227,11 @@ body.lock-scroll .doc-footer {
 .create-screen .create-lede { margin: 0 0 14px; }
 .create-screen .card { padding: 14px 16px; }
 .create-screen .form-card { gap: 16px; }
+#create-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
 .create-screen .field-block {
   display: flex;
   flex-direction: column;
@@ -345,7 +350,7 @@ select option { color: var(--ink); }
 .mode-options {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 14px;
 }
 
 .mode-option {
@@ -1798,16 +1803,17 @@ button.game-row {
 .vibe-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  gap: 14px;
 }
 
 .vibe-card {
+  position: relative;
   display: flex;
   align-items: flex-start;
   gap: 8px;
   text-align: left;
   border-radius: 14px !important;
-  padding: 10px !important;
+  padding: 12px !important;
   background: rgba(0, 0, 0, 0.22);
   min-height: 84px;
 }
@@ -1818,12 +1824,27 @@ button.game-row {
   color: var(--text);
 }
 
-.vibe-mark {
-  font-family: var(--display);
+.vibe-card.vibe-locked .vibe-copy {
+  filter: blur(3px);
+  opacity: 0.72;
+  user-select: none;
+}
+
+.vibe-lock {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(42, 20, 88, 0.88);
+  border: 1px solid rgba(255, 225, 74, 0.75);
   color: var(--gold);
-  font-size: 0.85rem;
-  letter-spacing: 0.04em;
-  flex-shrink: 0;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 .vibe-copy {
@@ -1847,6 +1868,119 @@ button.game-row {
 
 .vibe-grid .vibe-card:last-child:nth-child(odd) {
   grid-column: 1 / -1;
+}
+
+.mgs {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  align-items: stretch;
+  width: 100%;
+  padding: 6px;
+  border-radius: 999px;
+  touch-action: none;
+  user-select: none;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.97) 0%, rgba(236, 242, 252, 0.92) 48%, rgba(214, 224, 242, 0.9) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.95);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 1),
+    inset 0 -8px 14px rgba(170, 186, 214, 0.28),
+    0 10px 24px rgba(28, 12, 60, 0.22);
+  backdrop-filter: blur(18px) saturate(1.5);
+  -webkit-backdrop-filter: blur(18px) saturate(1.5);
+}
+
+.mgs-pill {
+  position: absolute;
+  z-index: 0;
+  top: 6px;
+  bottom: 6px;
+  left: 6px;
+  width: calc((100% - 12px) / 3);
+  border-radius: 999px;
+  transform: translateX(calc(var(--i, 1) * 100%));
+  transition: transform 0.46s cubic-bezier(0.22, 1.12, 0.32, 1);
+  pointer-events: none;
+  filter:
+    drop-shadow(0 8px 14px rgba(70, 130, 255, 0.32))
+    drop-shadow(0 0 10px rgba(150, 120, 255, 0.28));
+}
+
+.mgs-pill.is-dragging { transition: none; }
+
+.mgs-pill-glass {
+  position: relative;
+  height: 100%;
+  border-radius: inherit;
+  overflow: hidden;
+  background:
+    radial-gradient(78% 46% at 50% -6%, rgba(255, 255, 255, 0.98), rgba(255, 255, 255, 0.42) 34%, rgba(255, 255, 255, 0) 62%),
+    linear-gradient(102deg, #3aa6ff 0%, #4b82ff 34%, #7468ff 68%, #b06cff 100%);
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    inset 0 -14px 18px rgba(88, 40, 190, 0.2);
+}
+
+.mgs-sheen {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.mgs-option {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 92px;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  color: #3e465c;
+  font: inherit;
+  font-weight: 650;
+  font-size: 0.88rem;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+  white-space: nowrap;
+  border-radius: 999px;
+  cursor: pointer;
+  padding: 10px 4px 12px;
+  touch-action: none;
+}
+
+.mgs-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 36px;
+}
+
+.mgs-icon svg {
+  display: block;
+  height: 34px;
+  width: auto;
+}
+
+.mgs-option[aria-checked="true"] {
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(40, 30, 120, 0.25);
+}
+
+.mgs-option:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: -6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mgs-pill { transition: none; }
 }
 
 .friend-avatar {
